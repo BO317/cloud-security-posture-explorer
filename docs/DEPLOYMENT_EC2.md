@@ -1,5 +1,11 @@
 # Deploy the read-only provider on EC2
 
+Parameter Store configuration is now primary. Retain the existing EnvironmentFile
+for automatic fallback and a local bootstrap region. Add `ssm:GetParameter` on
+the exact configuration parameter ARN; see [configuration rollout and IAM details](PARAMETER_STORE_MIGRATION.md).
+The existing workload policy example covers posture reads; add this configuration
+read grant separately. No AWS permissions have been modified by this change.
+
 The operator reports the previous MVP already runs on EC2 under systemd with an
 instance role. This guide updates that installation; no EC2/IAM changes have been
 applied by this code change. Paths, service names, region, and resource identifiers

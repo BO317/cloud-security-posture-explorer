@@ -1,5 +1,11 @@
 # Workload IAM policy review
 
+Parameter Store configuration is now primary. Retain the existing EnvironmentFile
+for automatic fallback and a local bootstrap region. Add `ssm:GetParameter` on
+the exact configuration parameter ARN; see [configuration rollout and IAM details](PARAMETER_STORE_MIGRATION.md).
+The existing workload policy example covers posture reads; add this configuration
+read grant separately. No AWS permissions have been modified by this change.
+
 This is a review of the application's required permissions and an example policy,
 not an inspection or modification of the currently deployed role. The operator
 reports the S3 and security-group actions are already granted. Enabling EBS

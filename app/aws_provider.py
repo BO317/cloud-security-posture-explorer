@@ -1,7 +1,6 @@
 """Bounded AWS reads and strict normalization into the check evidence contract."""
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from ipaddress import ip_network
 import json
 import logging
@@ -9,18 +8,13 @@ import re
 from uuid import uuid4
 
 import boto3
-from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
 from app.checks import check
-from app.config import Settings
+from app.aws_support import SDK_CONFIG, safe_request_id, utc_now
+from app.config_provider import load_configuration
 
 LOGGER = logging.getLogger(__name__)
-SDK_CONFIG = Config(
-    connect_timeout=3, read_timeout=5,
-    retries={"mode": "standard", "total_max_attempts": 2},
-    ignore_configured_endpoint_urls=True,
-)
 PROTOCOLS = {"tcp": "tcp", "6": "tcp", "udp": "udp", "17": "udp",
              "icmp": "icmp", "1": "icmp", "icmpv6": "icmpv6", "58": "icmpv6", "-1": "all"}
 
@@ -36,10 +30,6 @@ class Scan:
     started_at: str
     completed_at: str
     resources: list
-
-
-def utc_now():
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def normalize_permissions(permissions):
@@ -93,13 +83,6 @@ def security_group_data(response, expected_id):
     if not isinstance(group, dict) or group.get("GroupId") != expected_id:
         raise EvidenceError("Returned security group does not match requested scope.")
     return normalize_permissions(group.get("IpPermissions"))
-
-
-def safe_request_id(response):
-    if not isinstance(response, dict) or not isinstance(response.get("ResponseMetadata"), dict):
-        return None
-    value = response["ResponseMetadata"].get("RequestId")
-    return value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9+=/_-]{1,200}", value) else None
 
 
 def read_with_audit(client, operation, api_requests, **parameters):
@@ -186,9 +169,9 @@ class AWSProvider:
         self.session_factory = session_factory or boto3.Session
         self.clock = clock
 
-    def collect(self):
-        started = self.clock()
-        scan_id = str(uuid4())
+    def collect(self, *, scan_id=None, started_at=None, config_source=None, config_version=None):
+        started = started_at or self.clock()
+        scan_id = scan_id or str(uuid4())
         resources = []
         session = None
         clients = {}
@@ -246,7 +229,8 @@ class AWSProvider:
                                     "target_index": ordinal, "kind": kind, "observed_at": observed_at,
                                     "status": result.status, "error": error,
                                     "reason": result.reason, "diagnostic": diagnostic, "request_id": request_id,
-                                    "api_requests": api_requests}))
+                                    "api_requests": api_requests, "config_source": config_source,
+                                    "config_version": config_version}))
             resources.append({"kind": kind, "name": name, "observation": observation})
         for client in clients.values():
             try:
@@ -257,4 +241,9 @@ class AWSProvider:
 
 
 def collect_from_environment():
-    return AWSProvider(Settings.from_environment()).collect()
+    """Resolve primary/fallback configuration inside the existing scan boundary."""
+    started, scan_id = utc_now(), str(uuid4())
+    loaded = load_configuration(scan_id=scan_id)
+    return AWSProvider(loaded.settings).collect(
+        scan_id=scan_id, started_at=started,
+        config_source=loaded.source, config_version=loaded.version)

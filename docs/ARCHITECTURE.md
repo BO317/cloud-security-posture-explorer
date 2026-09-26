@@ -13,8 +13,10 @@ flowchart TD
     Access --> Web[Loopback wsgiref server with request threads]
     Web --> Health[GET /healthz: liveness only]
     Web --> Gate[GET /: single collection lock]
-    Env[Region and explicit resource allowlists] --> Provider[AWS provider]
-    Gate --> Provider
+    Gate --> Config[Configuration loader]
+    Config --> SSM[SSM GetParameter: primary JSON]
+    Env[Local environment: validated fallback] --> Config
+    Config --> Provider[AWS provider]
     Role[EC2 instance role via default credential chain] --> SDK[boto3]
     Provider --> SDK
     SDK --> S3[S3 GetPublicAccessBlock]
@@ -38,7 +40,10 @@ is used. CloudWatch signals, alarms, and incident exercises remain future work.
 
 ## Provider and evidence decisions
 
-- `Settings` validates an explicit region and comma-separated allowlists; empty
+- Configuration loads the latest SSM JSON per scan, falling back to the complete
+  local environment on retrieval/validation failure. Both sources share Settings
+  validation. See [configuration guide](PARAMETER_STORE_MIGRATION.md).
+- `Settings` validates an explicit region and allowlists; empty
   scope is UNKNOWN and cannot trigger inventory discovery.
 - The provider creates a default boto3 Session lazily per scan, with no explicit
   credentials. It reads each bucket and each GroupId separately, isolating API

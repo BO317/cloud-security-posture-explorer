@@ -30,7 +30,8 @@ Stop with Ctrl+C. See [EC2 deployment](../docs/DEPLOYMENT_EC2.md) for systemd.
 
 | Setting | Meaning |
 | --- | --- |
-| `AWS_REGION` | Explicit SDK region; `AWS_DEFAULT_REGION` is a fallback only when `AWS_REGION` is absent |
+| `SSM_REGION` | Optional SSM bootstrap region override |
+| `AWS_REGION` | SSM bootstrap and fallback posture region; `AWS_DEFAULT_REGION` is a fallback only when `AWS_REGION` is absent |
 | `ALLOWED_BUCKETS` | Comma-separated bucket names; no wildcards, ARNs, or empty entries |
 | `ALLOWED_SECURITY_GROUPS` | Comma-separated security group IDs; no discovery or filters from the browser |
 | `ALLOWED_INSTANCES` | Optional comma-separated EC2 instance IDs for attached EBS volume encryption checks; empty disables this check |
@@ -38,9 +39,14 @@ Stop with Ctrl+C. See [EC2 deployment](../docs/DEPLOYMENT_EC2.md) for systemd.
 
 Allowlist entries are trimmed and deduplicated, with a maximum of 100 per list.
 Any list may be empty to skip those targets. All three empty, an absent region, or
-invalid configuration makes `/` return 503 with UNKNOWN and performs no AWS reads.
-The lists are read from the process environment for each scan; restart systemd
-after editing its environment file. SDK timeouts are fixed at 3 seconds connect,
+invalid configuration in both sources makes `/` return 503 with UNKNOWN and
+performs no posture reads. Parameter Store is primary at
+`/cloud-security-posture-explorer/lab/config`; its JSON has `region`,
+`allowed_buckets`, `allowed_security_groups`, and `allowed_instances`. The complete
+environment is the fallback on SSM/JSON/validation failure, without merging fields.
+See [configuration and rollout](../docs/PARAMETER_STORE_MIGRATION.md) and the
+[JSON example](deploy/parameter-store-config.example.json). Restart systemd after
+editing its environment file; remote changes apply on the next scan. SDK timeouts are fixed at 3 seconds connect,
 5 seconds read, and two total attempts in standard retry mode. Credential metadata
 timeouts are separate (see deployment example). These are not a whole-scan deadline.
 
@@ -143,7 +149,9 @@ deliberately alongside test execution rather than silently updating deployments.
 
 ## Files and operations
 
-- `config.py`: validated environment scope.
+- `config.py`: shared environment and JSON scope validation.
+- `config_provider.py`: primary SSM load, environment fallback, configuration audit.
+- `aws_support.py`: shared bounded SDK settings and safe audit metadata.
 - `aws_provider.py`: boto3 reads, response normalization, observation audit events.
 - `checks.py`: pure evidence validation and evaluation.
 - `server.py`: HTML, routes, threaded wsgiref listener and scan lock.

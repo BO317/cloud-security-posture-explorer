@@ -66,6 +66,10 @@ server binds to loopback only. `/healthz` returns `{"liveness":"ok"}` independen
 of AWS collection. Results contain actual collection/attempt timestamps. Synthetic
 fixtures are test-only and never used as a fallback. Stop with Ctrl+C.
 
+Configuration now loads from Parameter Store first, with the existing local
+environment as fallback. See the [configuration guide](docs/PARAMETER_STORE_MIGRATION.md)
+for the JSON schema, bootstrap region, and exact `ssm:GetParameter` permission.
+
 ## Before any deployment
 
 Review the plan and AWS account plan/credit balance, set a cost budget, and retain
