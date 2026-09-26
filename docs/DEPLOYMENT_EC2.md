@@ -74,17 +74,17 @@ Example contents:
 AWS_REGION=us-east-1
 ALLOWED_BUCKETS=your-personal-lab-bucket,another-personal-lab-bucket
 ALLOWED_SECURITY_GROUPS=sg-0123456789abcdef0
-ALLOWED_INSTANCES=i-0123456789abcdef0
+ALLOWED_INSTANCE_NAME_TAGS=cloud-security-posture-explorer
 AWS_METADATA_SERVICE_TIMEOUT=2
 AWS_METADATA_SERVICE_NUM_ATTEMPTS=1
 ```
 
 Do not copy over an existing environment file without retaining its current
 values. Comma-separated allowlists are explicit names/IDs, not patterns. Any
-list can be empty; all three empty produce UNKNOWN with no AWS calls. Up to 100 unique
-entries per list are supported. Leave `ALLOWED_INSTANCES` empty or unset to keep
+list can be empty; all three empty in both sources produce UNKNOWN with no posture calls. Up to 100 unique
+entries per list are supported. Leave `ALLOWED_INSTANCE_NAME_TAGS` empty or unset to keep
 EBS checks disabled. Setting it enables one aggregate EBS encryption result per
-instance, based on its attached volumes. Missing permissions or incomplete volume
+configured Name, based on the uniquely resolved instance and its attached volumes. Missing permissions or incomplete volume
 results produce UNKNOWN; no attached-volume evidence also produces UNKNOWN.
 Use a small scope: scans are sequential and
 total latency increases with each target. S3 bucket names are global; configure
@@ -96,6 +96,54 @@ The example unit deliberately clears static-key/profile overrides, disables shar
 credential/config files for this service, and keeps EC2 metadata enabled. If
 adapting an existing unit, retain those protections. Never put credentials in the
 environment file. Do not enable botocore debug logging around live inventory.
+
+## Name tag migration
+
+This is a one-time configuration schema change. The new code does not accept
+`allowed_instances`; a nonempty legacy `ALLOWED_INSTANCES` invalidates fallback
+rather than silently dropping EBS checks. No Terraform or AWS resources are
+modified by this application change.
+
+1. Preserve the deployed revision, Parameter Store JSON/version, and local env.
+2. Confirm the instance has the stable, case-sensitive `Name` tag value
+   `cloud-security-posture-explorer`. Future replacements must receive the same
+   tag from the existing deployment definition. Keep it unique in this account
+   and region among pending/running/stopping/stopped instances.
+3. Stop the existing service for the coordinated code/config update. If using the
+   bootstrap unit, its name is `cloud-security-posture-explorer.service`; the older
+   example below uses `cloud-security-posture.service`. Use the actual installed
+   name for all systemctl/journalctl commands; do not create a second service.
+4. Deploy/test the new code. As the configuration operator, replace the SSM JSON
+   `allowed_instances` key with `allowed_instance_name_tags`, using literal Name
+   values instead of IDs. Keep region, bucket, and security-group settings.
+5. Replace `ALLOWED_INSTANCES` in `/etc/cloud-security-posture.env` with
+   `ALLOWED_INSTANCE_NAME_TAGS=cloud-security-posture-explorer`. Update any saved
+   cloud-init/bootstrap environment template as well. Keep both sources aligned.
+6. Restart the existing service. Verify `configuration_load` selects `ssm`, then
+   check the dashboard's EBS row (now labeled by Name), evidence time, status, and
+   correlated audit events. Health alone does not establish a successful scan.
+7. Roll back by restoring the matching previous code, SSM document, and local
+   environment together, then restart. Old/new schema mixing is not supported.
+
+The resolver filters by `tag:Name` and non-terminated states and requires exactly
+one complete match. Zero matches (including propagation delay after creation),
+duplicate Names, missing tags/identity/state, API failures, or any continuation
+token yield UNKNOWN; no volume query occurs until identity is resolved. Stopped
+instances remain in scope. Terminated/shutting-down instances are excluded by the
+request. A bounded `MaxResults=5` response prevents unbounded lookup; a partial page
+is rejected rather than assuming it proves uniqueness. Retry after replacement
+or tag propagation settles. The app only observes; it performs no recovery action.
+
+EC2 documents eventual consistency and recently terminated results in
+[DescribeInstances](https://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_DescribeInstances.html).
+The existing DescribeInstances/DescribeVolumes permissions suffice.
+
+After this one-time migration, instance replacement with the same unique Name
+requires no Parameter Store EC2 target edit. **This does not make every Terraform
+destroy/apply independent of configuration:** security groups are still selected
+by ID, and their IDs may change on recreation; bucket names, region, parameter,
+role, and bootstrap settings must also remain valid. Security-group tag targeting
+is outside this change.
 
 ## Adapt systemd
 

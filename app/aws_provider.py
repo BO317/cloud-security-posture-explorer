@@ -15,6 +15,7 @@ from app.aws_support import SDK_CONFIG, safe_request_id, utc_now
 from app.config_provider import load_configuration
 
 LOGGER = logging.getLogger(__name__)
+INSTANCE_STATES = ("pending", "running", "stopping", "stopped")
 PROTOCOLS = {"tcp": "tcp", "6": "tcp", "udp": "udp", "17": "udp",
              "icmp": "icmp", "1": "icmp", "icmpv6": "icmpv6", "58": "icmpv6", "-1": "all"}
 
@@ -94,8 +95,8 @@ def read_with_audit(client, operation, api_requests, **parameters):
     return response
 
 
-def attached_volume_ids(response, instance_id):
-    """Require a complete response for exactly the requested instance."""
+def resolve_named_instance(response, expected_name):
+    """Require one complete, unambiguous match; never pick the first match."""
     if not isinstance(response, dict) or response.get("NextToken") not in (None, ""):
         raise EvidenceError("Instance response missing, malformed, or partial.")
     reservations = response.get("Reservations")
@@ -106,8 +107,27 @@ def attached_volume_ids(response, instance_id):
     if not isinstance(instances, list) or len(instances) != 1:
         raise EvidenceError("Requested instance missing or response ambiguous.")
     instance = instances[0]
-    if not isinstance(instance, dict) or instance.get("InstanceId") != instance_id:
-        raise EvidenceError("Returned instance does not match requested scope.")
+    if not isinstance(instance, dict):
+        raise EvidenceError("Instance data malformed.")
+    instance_id = instance.get("InstanceId")
+    if not isinstance(instance_id, str) or not re.fullmatch(r"i-(?:[0-9a-f]{8}|[0-9a-f]{17})", instance_id):
+        raise EvidenceError("Resolved instance ID missing or malformed.")
+    state = instance.get("State")
+    if not isinstance(state, dict) or state.get("Name") not in INSTANCE_STATES:
+        raise EvidenceError("Instance state missing, malformed, or outside scope.")
+    tags = instance.get("Tags")
+    if not isinstance(tags, list) or any(
+            not isinstance(tag, dict) or not isinstance(tag.get("Key"), str)
+            or not isinstance(tag.get("Value"), str) for tag in tags):
+        raise EvidenceError("Instance tags missing or malformed.")
+    names = [tag["Value"] for tag in tags if tag["Key"] == "Name"]
+    if names != [expected_name]:
+        raise EvidenceError("Instance Name tag missing, duplicated, or outside scope.")
+    return instance
+
+
+def attached_volume_ids(instance):
+    """Read mappings only after validating the instance identity and scope."""
     mappings = instance.get("BlockDeviceMappings")
     if not isinstance(mappings, list) or not mappings:
         raise EvidenceError("No complete attached EBS volume mappings available.")
@@ -155,9 +175,16 @@ def normalize_volumes(response, instance_id, expected_ids):
     return normalized
 
 
-def instance_volume_data(client, instance_id, api_requests):
-    response = read_with_audit(client, "describe_instances", api_requests, InstanceIds=[instance_id])
-    volume_ids = attached_volume_ids(response, instance_id)
+def instance_volume_data(client, name_tag, api_requests):
+    # One bounded page suffices only when it proves a unique complete match.
+    # Any NextToken is UNKNOWN; do not follow it or assume the first match wins.
+    response = read_with_audit(client, "describe_instances", api_requests,
+                               Filters=[{"Name": "tag:Name", "Values": [name_tag]},
+                                        {"Name": "instance-state-name", "Values": list(INSTANCE_STATES)}],
+                               MaxResults=5)
+    instance = resolve_named_instance(response, name_tag)
+    instance_id = instance["InstanceId"]
+    volume_ids = attached_volume_ids(instance)
     # Never call DescribeVolumes with an empty list (which could broaden scope).
     response = read_with_audit(client, "describe_volumes", api_requests, VolumeIds=volume_ids)
     return normalize_volumes(response, instance_id, volume_ids)
@@ -177,7 +204,7 @@ class AWSProvider:
         clients = {}
         targets = [("s3", name) for name in self.settings.buckets]
         targets += [("security_group", name) for name in self.settings.security_groups]
-        targets += [("ebs_encryption", name) for name in self.settings.instances]
+        targets += [("ebs_encryption", name) for name in self.settings.instance_name_tags]
         for ordinal, (kind, name) in enumerate(targets):
             data, error, request_id = None, None, None
             diagnostic = None

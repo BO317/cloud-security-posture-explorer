@@ -16,6 +16,8 @@ from app.config import Settings
 from app.server import create_application
 from app.tests.test_server import request
 
+NAME = "cloud-security-posture-explorer"
+OTHER_NAME = "lab-worker"
 INSTANCE = "i-0123456789abcdef0"
 OTHER = "i-0123456789abcdef1"
 VOLUME = "vol-0123456789abcdef0"
@@ -23,8 +25,15 @@ SECOND_VOLUME = "vol-0123456789abcdef1"
 STAMP = "2026-09-26T12:00:00+00:00"
 
 
-def instance_response(instance_id=INSTANCE, volume_ids=(VOLUME,)):
+def instance_request(name):
+    return {"Filters": [{"Name": "tag:Name", "Values": [name]},
+                        {"Name": "instance-state-name", "Values": ["pending", "running", "stopping", "stopped"]}],
+            "MaxResults": 5}
+
+
+def instance_response(instance_id=INSTANCE, volume_ids=(VOLUME,), name=NAME):
     return {"Reservations": [{"Instances": [{"InstanceId": instance_id,
+            "Tags": [{"Key": "Name", "Value": name}], "State": {"Name": "running"},
             "BlockDeviceMappings": [{"Ebs": {"VolumeId": value, "Status": "attached"}} for value in volume_ids]}]}],
             "ResponseMetadata": {"RequestId": "instance-request"}}
 
@@ -42,7 +51,7 @@ class EBSProviderTest(unittest.TestCase):
         self.addCleanup(blocker.stop)
         self.ec2, self.session = Mock(), Mock()
         self.session.client.return_value = self.ec2
-        self.provider = AWSProvider(Settings("us-east-1", (), (), (INSTANCE,)),
+        self.provider = AWSProvider(Settings("us-east-1", (), (), (NAME,)),
                                     Mock(return_value=self.session), clock=lambda: STAMP)
         self.ec2.describe_instances.return_value = instance_response()
         self.ec2.describe_volumes.return_value = volume_response()
@@ -50,20 +59,64 @@ class EBSProviderTest(unittest.TestCase):
     def result(self):
         resources = self.provider.collect().resources
         self.assertEqual(len(resources), 1)
-        self.assertEqual(resources[0]["name"], INSTANCE)
+        self.assertEqual(resources[0]["name"], NAME)
         return check(resources[0]["kind"], resources[0]["observation"])
 
     def test_encrypted_volume_passes_and_requests_are_bounded(self):
         result = self.result()
         self.assertEqual(result.status, "PASS")
         self.assertEqual(result.observed_at, STAMP)
-        self.ec2.describe_instances.assert_called_once_with(InstanceIds=[INSTANCE])
+        self.ec2.describe_instances.assert_called_once_with(**instance_request(NAME))
         self.ec2.describe_volumes.assert_called_once_with(VolumeIds=[VOLUME])
         self.session.client.assert_called_once()
 
     def test_unencrypted_volume_is_review(self):
         self.ec2.describe_volumes.return_value = volume_response(False)
         self.assertEqual(self.result().status, "REVIEW")
+
+    def test_replacement_instance_is_resolved_without_configuration_change(self):
+        self.assertEqual(self.result().status, "PASS")
+        self.ec2.describe_instances.return_value = instance_response(OTHER, (SECOND_VOLUME,))
+        self.ec2.describe_volumes.return_value = volume_response(False, SECOND_VOLUME, OTHER)
+        self.assertEqual(self.result().status, "REVIEW")
+        self.assertEqual(self.provider.settings.instance_name_tags, (NAME,))
+        self.ec2.describe_volumes.assert_called_with(VolumeIds=[SECOND_VOLUME])
+        self.assertEqual(self.ec2.describe_instances.call_args_list,
+                         [call(**instance_request(NAME)), call(**instance_request(NAME))])
+
+    def test_duplicate_name_matches_are_unknown_without_volume_reads(self):
+        for separate_reservations in (False, True):
+            response = instance_response()
+            other = instance_response(OTHER)
+            if separate_reservations:
+                response["Reservations"] += other["Reservations"]
+            else:
+                response["Reservations"][0]["Instances"] += other["Reservations"][0]["Instances"]
+            self.ec2.describe_instances.return_value = response
+            self.assertEqual(self.result().status, "UNKNOWN")
+        self.ec2.describe_volumes.assert_not_called()
+
+    def test_tags_identity_and_state_must_be_complete_and_in_scope(self):
+        for key, value in (
+                ("Tags", None), ("Tags", []), ("Tags", [{}]),
+                ("Tags", [{"Key": "Name", "Value": NAME}] * 2),
+                ("Tags", [{"Key": "name", "Value": NAME}]),
+                ("Tags", [{"Key": "Name", "Value": NAME.upper()}]),
+                ("InstanceId", None), ("InstanceId", "invalid"),
+                ("State", None), ("State", {}),
+                ("State", {"Name": "terminated"}), ("State", {"Name": "shutting-down"})):
+            with self.subTest(key=key, value=value):
+                response = instance_response()
+                response["Reservations"][0]["Instances"][0][key] = value
+                self.ec2.describe_instances.return_value = response
+                self.assertEqual(self.result().status, "UNKNOWN")
+        self.ec2.describe_volumes.assert_not_called()
+
+    def test_stopped_instance_remains_in_encryption_scope(self):
+        response = instance_response()
+        response["Reservations"][0]["Instances"][0]["State"] = {"Name": "stopped"}
+        self.ec2.describe_instances.return_value = response
+        self.assertEqual(self.result().status, "PASS")
 
     def test_all_volumes_evaluated_regardless_of_return_order(self):
         self.ec2.describe_instances.return_value = instance_response(volume_ids=(VOLUME, SECOND_VOLUME))
@@ -75,7 +128,7 @@ class EBSProviderTest(unittest.TestCase):
 
     def test_missing_invalid_or_partial_instance_data_is_unknown(self):
         cases = [None, {}, {"Reservations": []}, {"Reservations": [None]},
-                 {"Reservations": [{"Instances": []}]}, instance_response(OTHER),
+                 {"Reservations": [{"Instances": []}]}, instance_response(name=OTHER_NAME),
                  instance_response(volume_ids=()), {**instance_response(), "NextToken": "more"}]
         for replacement in (None, {}, [None], [{}], [{"Ebs": {}}],
                             [{"Ebs": {"VolumeId": VOLUME}}],
@@ -145,12 +198,12 @@ class EBSProviderTest(unittest.TestCase):
             method.side_effect = None
 
     def test_one_instance_failure_does_not_hide_the_next(self):
-        self.provider.settings = Settings("us-east-1", (), (), (INSTANCE, OTHER))
-        self.ec2.describe_instances.side_effect = [ReadTimeoutError(endpoint_url="https://example.invalid"), instance_response(OTHER)]
+        self.provider.settings = Settings("us-east-1", (), (), (NAME, OTHER_NAME))
+        self.ec2.describe_instances.side_effect = [ReadTimeoutError(endpoint_url="https://example.invalid"), instance_response(OTHER, name=OTHER_NAME)]
         self.ec2.describe_volumes.return_value = volume_response(instance_id=OTHER)
         scan = self.provider.collect()
         self.assertEqual([check(row["kind"], row["observation"]).status for row in scan.resources], ["UNKNOWN", "PASS"])
-        self.assertEqual(self.ec2.describe_instances.call_args_list, [call(InstanceIds=[INSTANCE]), call(InstanceIds=[OTHER])])
+        self.assertEqual(self.ec2.describe_instances.call_args_list, [call(**instance_request(NAME)), call(**instance_request(OTHER_NAME))])
 
     def test_empty_instance_allowlist_makes_no_instance_or_volume_calls(self):
         self.provider.settings = Settings("us-east-1", (), ("sg-12345678",))
@@ -169,7 +222,7 @@ class EBSProviderTest(unittest.TestCase):
             {"operation": "describe_instances", "request_id": "instance-request"},
             {"operation": "describe_volumes", "request_id": "volume-request"}])
         self.assertEqual(event["kind"], "ebs_encryption")
-        for identifier in (INSTANCE, VOLUME):
+        for identifier in (NAME, INSTANCE, VOLUME):
             self.assertNotIn(identifier, " ".join(captured.output))
 
     def test_failed_volume_call_retains_both_audit_requests(self):
@@ -195,7 +248,7 @@ class EBSProviderTest(unittest.TestCase):
     def test_dashboard_uses_existing_columns_and_health_remains_independent(self):
         app = create_application(self.provider.collect)
         response = request(app)
-        for text in ("EBS Volume Encryption", INSTANCE, "PASS", STAMP):
+        for text in ("EBS Volume Encryption", NAME, "PASS", STAMP):
             self.assertIn(text, response["body"])
         self.assertEqual(response["body"].count("<tr>"), 2)
         self.ec2.describe_instances.reset_mock()
@@ -209,7 +262,7 @@ class EBSProviderTest(unittest.TestCase):
         self.addCleanup(client.close)
         self.session.client.return_value = client
         with Stubber(client) as stub:
-            stub.add_response("describe_instances", instance_response(), {"InstanceIds": [INSTANCE]})
+            stub.add_response("describe_instances", instance_response(), instance_request(NAME))
             stub.add_response("describe_volumes", volume_response(), {"VolumeIds": [VOLUME]})
             self.assertEqual(self.result().status, "PASS")
             stub.assert_no_pending_responses()

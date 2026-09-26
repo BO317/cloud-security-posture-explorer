@@ -5,6 +5,10 @@ import os
 import re
 
 
+# Deliberately restricted literal Name values; no EC2 filter wildcard syntax.
+NAME_TAG_PATTERN = r"[A-Za-z0-9][A-Za-z0-9 ._/@+=-]{0,255}"
+
+
 class ConfigurationError(ValueError):
     """Safe configuration diagnostic, containing no configured values."""
 
@@ -36,17 +40,17 @@ class Settings:
     region: str
     buckets: tuple[str, ...]
     security_groups: tuple[str, ...]
-    instances: tuple[str, ...] = ()
+    instance_name_tags: tuple[str, ...] = ()
 
     @classmethod
     def from_document(cls, document):
-        fields = {"region", "allowed_buckets", "allowed_security_groups", "allowed_instances"}
+        fields = {"region", "allowed_buckets", "allowed_security_groups", "allowed_instance_name_tags"}
         if not isinstance(document, dict) or set(document) != fields:
             raise ConfigurationError("Configuration JSON must contain exactly the four supported fields.")
         region = validate_region(document["region"])
         buckets = _identifiers(document["allowed_buckets"], "allowed_buckets", r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]")
         groups = _identifiers(document["allowed_security_groups"], "allowed_security_groups", r"sg-(?:[0-9a-f]{8}|[0-9a-f]{17})")
-        instances = _identifiers(document["allowed_instances"], "allowed_instances", r"i-(?:[0-9a-f]{8}|[0-9a-f]{17})")
+        instances = _identifiers(document["allowed_instance_name_tags"], "allowed_instance_name_tags", NAME_TAG_PATTERN)
         if not buckets and not groups and not instances:
             raise ConfigurationError("Empty scope is UNKNOWN; configure at least one explicit resource.")
         return cls(region, buckets, groups, instances)
@@ -54,10 +58,12 @@ class Settings:
     @classmethod
     def from_environment(cls, environ=None):
         env = os.environ if environ is None else environ
+        if env.get("ALLOWED_INSTANCES", "").strip():
+            raise ConfigurationError("Replace ALLOWED_INSTANCES with ALLOWED_INSTANCE_NAME_TAGS; legacy IDs are not supported.")
         region = validate_region(env.get("AWS_REGION", env.get("AWS_DEFAULT_REGION", "")))
         buckets = _allowlist(env, "ALLOWED_BUCKETS", r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]")
         groups = _allowlist(env, "ALLOWED_SECURITY_GROUPS", r"sg-(?:[0-9a-f]{8}|[0-9a-f]{17})")
-        instances = _allowlist(env, "ALLOWED_INSTANCES", r"i-(?:[0-9a-f]{8}|[0-9a-f]{17})")
+        instances = _allowlist(env, "ALLOWED_INSTANCE_NAME_TAGS", NAME_TAG_PATTERN)
         if not buckets and not groups and not instances:
-            raise ConfigurationError("Configure ALLOWED_BUCKETS, ALLOWED_SECURITY_GROUPS, or ALLOWED_INSTANCES; empty scope is UNKNOWN.")
+            raise ConfigurationError("Configure ALLOWED_BUCKETS, ALLOWED_SECURITY_GROUPS, or ALLOWED_INSTANCE_NAME_TAGS; empty scope is UNKNOWN.")
         return cls(region, buckets, groups, instances)

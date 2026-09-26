@@ -4,17 +4,38 @@ from app.config import ConfigurationError, Settings
 
 
 class ConfigurationTest(unittest.TestCase):
+    def test_legacy_environment_cannot_silently_disable_ebs(self):
+        with self.assertRaises(ConfigurationError):
+            Settings.from_environment({"AWS_REGION": "us-east-1", "ALLOWED_BUCKETS": "demo-bucket",
+                                       "ALLOWED_INSTANCES": "i-12345678"})
+
+    def test_name_tag_validation_is_shared_and_literal(self):
+        document = {"region": "us-east-1", "allowed_buckets": [], "allowed_security_groups": [],
+                    "allowed_instance_name_tags": ["cloud-security-posture-explorer"]}
+        self.assertEqual(Settings.from_document(document).instance_name_tags,
+                         ("cloud-security-posture-explorer",))
+        for name in ("", "*", "lab?", "lab\\*", "lab,other", "lab\nworker", "x" * 257, "lab[1]"):
+            with self.subTest(name=name), self.assertRaises(ConfigurationError):
+                Settings.from_document({**document, "allowed_instance_name_tags": [name]})
+        for invalid in (None, "lab", [None], [False], [12]):
+            with self.subTest(invalid=invalid), self.assertRaises(ConfigurationError):
+                Settings.from_document({**document, "allowed_instance_name_tags": invalid})
+        legacy = {**document, "allowed_instances": ["i-12345678"]}
+        del legacy["allowed_instance_name_tags"]
+        with self.assertRaises(ConfigurationError):
+            Settings.from_document(legacy)
+
     def test_instance_only_scope_is_valid_and_deduplicated(self):
-        settings = Settings.from_environment({"AWS_REGION": "us-east-1", "ALLOWED_INSTANCES": " i-0123456789abcdef0,i-0123456789abcdef0,i-12345678 "})
-        self.assertEqual(settings.instances, ("i-0123456789abcdef0", "i-12345678"))
+        settings = Settings.from_environment({"AWS_REGION": "us-east-1", "ALLOWED_INSTANCE_NAME_TAGS": " cloud-security-posture-explorer,cloud-security-posture-explorer,lab-worker "})
+        self.assertEqual(settings.instance_name_tags, ("cloud-security-posture-explorer", "lab-worker"))
         self.assertEqual(settings.buckets, ())
         self.assertEqual(settings.security_groups, ())
 
     def test_invalid_instance_scope_rejected(self):
-        for value in ("*", "i-invalid", "i-12345678,", "arn:aws:ec2:us-east-1:123456789012:instance/i-12345678",
-                      ",".join(f"i-{index:017x}" for index in range(101))):
+        for value in ("*", "lab?", "lab-worker,", "arn:aws:ec2:us-east-1:123456789012:instance/lab-worker",
+                      ",".join(f"lab-{index}" for index in range(101))):
             with self.subTest(value=value), self.assertRaises(ConfigurationError):
-                Settings.from_environment({"AWS_REGION": "us-east-1", "ALLOWED_INSTANCES": value})
+                Settings.from_environment({"AWS_REGION": "us-east-1", "ALLOWED_INSTANCE_NAME_TAGS": value})
 
     def test_explicit_scope_and_deduplication(self):
         settings = Settings.from_environment({"AWS_REGION": "us-east-1", "ALLOWED_BUCKETS": " demo-bucket, demo-bucket ", "ALLOWED_SECURITY_GROUPS": "sg-12345678"})

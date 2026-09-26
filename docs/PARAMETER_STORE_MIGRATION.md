@@ -15,7 +15,7 @@ Use the [JSON example](../app/deploy/parameter-store-config.example.json):
   "region": "us-east-1",
   "allowed_buckets": ["replace-with-your-lab-bucket"],
   "allowed_security_groups": ["sg-0123456789abcdef0"],
-  "allowed_instances": []
+  "allowed_instance_name_tags": ["cloud-security-posture-explorer"]
 }
 ```
 
@@ -37,10 +37,15 @@ directive. systemd loads the file into the process; Python does not parse it.
 | `SSM_REGION` | Optional override for SSM's region if different from the local region |
 | `ALLOWED_BUCKETS` | Existing comma-separated fallback bucket list |
 | `ALLOWED_SECURITY_GROUPS` | Existing comma-separated fallback group list |
-| `ALLOWED_INSTANCES` | Existing comma-separated fallback instance list |
+| `ALLOWED_INSTANCE_NAME_TAGS` | Comma-separated literal EC2 Name values for fallback |
 
 At least one valid bootstrap region must be supplied locally: the application
 cannot read the remote region before it knows which SSM endpoint to contact.
+
+The old `allowed_instances` JSON key is rejected, and a nonempty legacy
+`ALLOWED_INSTANCES` invalidates the local fallback. Migrate both sources with
+the code release; see [Name tag migration](DEPLOYMENT_EC2.md#name-tag-migration).
+Name values follow the restricted literal syntax documented in [app/README.md](../app/README.md).
 
 ## Loading and failure behavior
 

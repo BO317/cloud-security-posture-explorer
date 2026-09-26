@@ -50,12 +50,12 @@ python3 -m venv .venv
 export AWS_REGION=us-east-1
 export ALLOWED_BUCKETS=your-personal-lab-bucket
 export ALLOWED_SECURITY_GROUPS=sg-0123456789abcdef0
-export ALLOWED_INSTANCES=i-0123456789abcdef0
+export ALLOWED_INSTANCE_NAME_TAGS=cloud-security-posture-explorer
 .venv/bin/python -m app.server --port 8000
 ```
 
 Replace sample identifiers with explicit personal-lab resources. Any resource
-list can be empty, but at least one must be set. `ALLOWED_INSTANCES` enables EBS
+list can be empty, but at least one must be set. `ALLOWED_INSTANCE_NAME_TAGS` enables EBS
 encryption checks and requires `ec2:DescribeInstances` and `ec2:DescribeVolumes`
 on the existing role. Tests require no AWS access or credentials; live
 reads use the boto3 default credential chain and EC2 role. On Windows use

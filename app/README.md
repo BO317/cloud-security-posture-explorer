@@ -14,7 +14,7 @@ python3 -m venv .venv
 export AWS_REGION=us-east-1
 export ALLOWED_BUCKETS=your-personal-lab-bucket
 export ALLOWED_SECURITY_GROUPS=sg-0123456789abcdef0
-export ALLOWED_INSTANCES=i-0123456789abcdef0
+export ALLOWED_INSTANCE_NAME_TAGS=cloud-security-posture-explorer
 .venv/bin/python -m app.server --port 8000
 ```
 
@@ -34,7 +34,7 @@ Stop with Ctrl+C. See [EC2 deployment](../docs/DEPLOYMENT_EC2.md) for systemd.
 | `AWS_REGION` | SSM bootstrap and fallback posture region; `AWS_DEFAULT_REGION` is a fallback only when `AWS_REGION` is absent |
 | `ALLOWED_BUCKETS` | Comma-separated bucket names; no wildcards, ARNs, or empty entries |
 | `ALLOWED_SECURITY_GROUPS` | Comma-separated security group IDs; no discovery or filters from the browser |
-| `ALLOWED_INSTANCES` | Optional comma-separated EC2 instance IDs for attached EBS volume encryption checks; empty disables this check |
+| `ALLOWED_INSTANCE_NAME_TAGS` | Optional comma-separated literal EC2 Name tag values for attached EBS volume encryption checks; empty disables this check |
 | `--port` | HTTP port, default 8000; host remains fixed at `127.0.0.1` |
 
 Allowlist entries are trimmed and deduplicated, with a maximum of 100 per list.
@@ -42,13 +42,24 @@ Any list may be empty to skip those targets. All three empty, an absent region, 
 invalid configuration in both sources makes `/` return 503 with UNKNOWN and
 performs no posture reads. Parameter Store is primary at
 `/cloud-security-posture-explorer/lab/config`; its JSON has `region`,
-`allowed_buckets`, `allowed_security_groups`, and `allowed_instances`. The complete
+`allowed_buckets`, `allowed_security_groups`, and `allowed_instance_name_tags`. The complete
 environment is the fallback on SSM/JSON/validation failure, without merging fields.
 See [configuration and rollout](../docs/PARAMETER_STORE_MIGRATION.md) and the
 [JSON example](deploy/parameter-store-config.example.json). Restart systemd after
 editing its environment file; remote changes apply on the next scan. SDK timeouts are fixed at 3 seconds connect,
 5 seconds read, and two total attempts in standard retry mode. Credential metadata
 timeouts are separate (see deployment example). These are not a whole-scan deadline.
+
+Name values use a deliberately restricted syntax: 1-256 characters, starting
+with an ASCII letter/digit, followed by ASCII letters/digits, spaces, or
+`._/@+=-`. Leading/trailing whitespace is trimmed. Wildcards (`*`, `?`), commas,
+control characters, backslashes, and ARNs are rejected. Keep each Name unique
+among non-terminated instances in the configured region/account. Names are
+application scope selectors, not an IAM authorization boundary.
+
+`allowed_instances` and nonempty `ALLOWED_INSTANCES` are no longer accepted.
+Migrate both primary and fallback configuration with the code release; see the
+[deployment migration steps](../docs/DEPLOYMENT_EC2.md#name-tag-migration).
 
 ## Endpoints and collection lifecycle
 
@@ -61,7 +72,7 @@ timeouts are separate (see deployment example). These are not a whole-scan deadl
 | Other methods | 405; no write routes |
 
 Resources are read sequentially, one explicit bucket or security group per API
-request. Each allowlisted instance adds a DescribeInstances request and, when its
+request. Each allowlisted Name tag adds a DescribeInstances request and, when its
 volume mappings are valid, a DescribeVolumes request for only those volume IDs.
 One failed resource does not suppress the others. The scan has a UUID,
 start/end timestamps, and per-resource observation/failed-attempt times in UTC.
@@ -83,9 +94,12 @@ observations) makes evidence INCOMPLETE.
 
 ## Check contract and conservative UNKNOWN behavior
 
-- **EBS Volume Encryption:** one result per `ALLOWED_INSTANCES` entry. Read the
-  exact instance using `describe_instances(InstanceIds=[id])`, extract its EBS
-  mappings, and call `describe_volumes(VolumeIds=[...])` for those IDs only. Every
+- **EBS Volume Encryption:** one result per `ALLOWED_INSTANCE_NAME_TAGS` entry. Read the
+  unique instance using `describe_instances` with an exact `tag:Name` filter and
+  `instance-state-name` values pending/running/stopping/stopped. Zero matches or
+  multiple matches are UNKNOWN; no instance is arbitrarily selected. Returned
+  ID, state, and case-sensitive Name tag must be complete and valid. Extract EBS
+  mappings from that resolved instance, and call `describe_volumes(VolumeIds=[...])` for those IDs only. Every
   volume must be returned exactly once with a strict boolean `Encrypted` and a
   confirmed `attached` association to that instance. All true is PASS; any false
   with otherwise complete evidence is REVIEW. Missing/malformed fields, permission
@@ -96,8 +110,12 @@ observations) makes evidence INCOMPLETE.
   volumes, snapshots, KMS key policies, and encryption-by-default settings are not
   assessed. These sequential reads are a point-in-time observation, not an atomic
   snapshot; detected attachment inconsistencies require a fresh collection.
-  Both EC2 responses are requested without pagination limits. An unexpected
-  continuation token is treated as incomplete evidence, not silently ignored.
+  DescribeInstances requests one bounded page (`MaxResults=5`). Any continuation
+  token is UNKNOWN: this intentionally refuses to resolve identity from a partial
+  result. DescribeVolumes requests explicit IDs without a pagination limit; any
+  unexpected continuation token is likewise UNKNOWN. Each scan resolves the Name
+  again; replacing an instance with the same Name requires no EC2 config change.
+  The dashboard resource column shows the configured Name value.
 - **S3:** `get_public_access_block(Bucket=...)` reads four strict boolean fields.
   All true is PASS, any false with otherwise complete evidence is REVIEW, and
   API errors, missing flags, or invalid values are UNKNOWN. Even
@@ -159,7 +177,7 @@ deliberately alongside test execution rather than silently updating deployments.
 - `deploy/`: illustrative environment, systemd unit, and role permissions policy.
 
 Observation logs contain scan ID, zero-based target index (buckets first, then
-groups, then instances, in allowlist order), kind, timestamp, status, safe
+groups, then instance Name targets, in allowlist order), kind, timestamp, status, safe
 reason/diagnostic, and AWS request ID when available. `request_id` identifies the
 last attempted API call; `api_requests` preserves operation names and request IDs
 for every attempted call, including both EBS collection stages. A failed call

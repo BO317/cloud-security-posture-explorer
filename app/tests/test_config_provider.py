@@ -15,7 +15,7 @@ from app.server import create_application
 from app.tests.test_server import request
 
 DOCUMENT = {"region": "us-west-2", "allowed_buckets": ["demo-bucket"],
-            "allowed_security_groups": [], "allowed_instances": []}
+            "allowed_security_groups": [], "allowed_instance_name_tags": []}
 ENV = {"AWS_REGION": "us-east-1", "ALLOWED_SECURITY_GROUPS": "sg-12345678"}
 
 
@@ -77,12 +77,12 @@ class ParameterConfigurationTest(unittest.TestCase):
                 self.assertEqual(self.load().source, "environment")
 
     def test_invalid_documents_cannot_merge_with_local_config(self):
-        documents = [[], {}, {**DOCUMENT, "allowed_instances": None},
+        documents = [[], {}, {**DOCUMENT, "allowed_instance_name_tags": None},
                      {**DOCUMENT, "allowed_buckets": "demo-bucket"},
                      {**DOCUMENT, "allowed_buckets": [True]},
                      {**DOCUMENT, "allowed_buckets": ["demo-bucket,other-bucket"]},
                      {**DOCUMENT, "allowed_buckets": []},
-                     {**DOCUMENT, "allowed_instances": ["*"]},
+                     {**DOCUMENT, "allowed_instance_name_tags": ["*"]},
                      {**DOCUMENT, "extra": "unsupported"},
                      {**DOCUMENT, "allowed_buckets": [f"demo-{i}" for i in range(101)]}]
         for document in documents:
@@ -97,8 +97,27 @@ class ParameterConfigurationTest(unittest.TestCase):
         self.assertEqual(self.load().source, "environment")
 
     def test_shared_validation_trims_and_deduplicates(self):
-        settings = Settings.from_document({**DOCUMENT, "allowed_instances": [" i-12345678 ", "i-12345678"]})
-        self.assertEqual(settings.instances, ("i-12345678",))
+        settings = Settings.from_document({**DOCUMENT, "allowed_instance_name_tags": [" lab-worker ", "lab-worker"]})
+        self.assertEqual(settings.instance_name_tags, ("lab-worker",))
+
+    def test_ssm_name_only_scope_overrides_local_scope(self):
+        document = {**DOCUMENT, "allowed_buckets": [],
+                    "allowed_instance_name_tags": ["cloud-security-posture-explorer"]}
+        self.client.get_parameter.return_value = response(document)
+        loaded = self.load()
+        self.assertEqual(loaded.source, "ssm")
+        self.assertEqual(loaded.settings.instance_name_tags, ("cloud-security-posture-explorer",))
+        self.assertEqual(loaded.settings.security_groups, ())
+
+    def test_legacy_ssm_schema_uses_only_valid_new_fallback(self):
+        document = {**DOCUMENT, "allowed_instances": ["i-12345678"]}
+        del document["allowed_instance_name_tags"]
+        self.client.get_parameter.return_value = response(document)
+        env = {"AWS_REGION": "us-east-1", "ALLOWED_INSTANCE_NAME_TAGS": "lab-worker"}
+        loaded = self.load(env)
+        self.assertEqual(loaded.source, "environment")
+        self.assertEqual(loaded.settings.instance_name_tags, ("lab-worker",))
+        self.assertEqual(loaded.settings.buckets, ())
 
     def test_both_sources_invalid_fail_closed(self):
         self.client.get_parameter.return_value = {}

@@ -21,7 +21,7 @@ flowchart TD
     Provider --> SDK
     SDK --> S3[S3 GetPublicAccessBlock]
     SDK --> EC2[EC2 DescribeSecurityGroups]
-    SDK --> Instances[EC2 DescribeInstances: allowlisted IDs]
+    SDK --> Instances[EC2 DescribeInstances: exact Name and state filters]
     Instances --> Volumes[EC2 DescribeVolumes: mapped EBS IDs]
     S3 --> Evidence[Validated observations or collection errors]
     EC2 --> Evidence
@@ -52,8 +52,11 @@ is used. CloudWatch signals, alarms, and incident exercises remain future work.
 - Exactly one matching security group and a complete rule list are required.
   Unexpected continuation tokens, duplicate/wrong groups, missing fields, and
   unsupported source references are UNKNOWN. No partial response is promoted to PASS.
-- Each `ALLOWED_INSTANCES` entry adds an EBS Volume Encryption check using
-  DescribeInstances followed by DescribeVolumes for the mapped volume IDs. All
+- Each `ALLOWED_INSTANCE_NAME_TAGS` entry adds an EBS Volume Encryption check using
+  filtered DescribeInstances followed by DescribeVolumes for the mapped volume IDs.
+  Require exactly one non-terminated match, validated Name/state/ID, and no
+  continuation token. Zero/multiple matches or partial resolution are UNKNOWN.
+  Name resolution repeats per scan so replacement IDs are picked up automatically. All
   attached volumes must have `Encrypted=True` to PASS; any false yields REVIEW
   only when all evidence is complete. Missing/partial data, mismatched attachments,
   API errors, or no volume evidence yield UNKNOWN. Reads are sequential rather than

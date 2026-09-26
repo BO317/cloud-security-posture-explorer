@@ -17,7 +17,7 @@ those permissions to AWS.
 | --- | --- | --- |
 | `s3.get_public_access_block(Bucket=name)` | `s3:GetBucketPublicAccessBlock` | Exact configured bucket ARNs; no object `/*` suffix |
 | `ec2.describe_security_groups(GroupIds=[id])` | `ec2:DescribeSecurityGroups` | `Resource: "*"`; restrict `ec2:Region` to the configured region |
-| `ec2.describe_instances(InstanceIds=[id])` | `ec2:DescribeInstances` | `Resource: "*"`; same region restriction |
+| `ec2.describe_instances(Filters=[tag:Name, instance-state-name], MaxResults=5)` | `ec2:DescribeInstances` | `Resource: "*"`; same region restriction |
 | `ec2.describe_volumes(VolumeIds=[...])` | `ec2:DescribeVolumes` | `Resource: "*"`; same region restriction |
 
 Use [workload-policy.example.json](../app/deploy/workload-policy.example.json) as a
@@ -39,13 +39,19 @@ application behavior, not an IAM isolation boundary.
 
 `DescribeInstances` and `DescribeVolumes` likewise require `Resource: "*"` and
 support `ec2:Region`; they cannot be restricted to individual instance/volume ARNs
-with these actions. The provider requests only explicit `ALLOWED_INSTANCES` and
+with these actions. The provider requests only explicit `ALLOWED_INSTANCE_NAME_TAGS` and
 their mapped EBS volume IDs, but that application scope is not an IAM boundary.
 The example policy includes all three EC2 reads. If EBS checks remain disabled,
 the two new permissions can be omitted. No KMS permission, volume-content access,
 or encryption/write action is required to inspect the `Encrypted` metadata.
 See [DescribeInstances](https://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_DescribeInstances.html)
 and [DescribeVolumes](https://docs.aws.amazon.com/boto3/latest/reference/services/ec2/client/describe_volumes.html).
+
+Name-based resolution adds no new IAM action: tags arrive in DescribeInstances.
+No DescribeTags or tag-write permission is needed. Keep configuration/Name-tag
+write access restricted to the deployment operator, because a tag change can
+change the application target. This is selection behavior, not resource-level
+IAM enforcement.
 
 ## Identity and boundaries
 
