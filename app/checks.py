@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 from ipaddress import ip_network
+import re
 
 
 BPA_FLAGS = (
@@ -50,6 +51,24 @@ def check(kind, observation):
     if timestamp is None:
         return result("UNKNOWN", "Observation timestamp missing or invalid.")
     data = observation.get("data")
+    if kind == "ebs_encryption":
+        if not isinstance(data, list) or not data:
+            return result("UNKNOWN", "No complete attached EBS volume evidence available.")
+        seen = set()
+        unencrypted = 0
+        for volume in data:
+            if not isinstance(volume, dict):
+                return result("UNKNOWN", "Attached EBS volume evidence malformed.")
+            volume_id = volume.get("volume_id")
+            if (not isinstance(volume_id, str)
+                    or not re.fullmatch(r"vol-(?:[0-9a-f]{8}|[0-9a-f]{17})", volume_id)
+                    or volume_id in seen or type(volume.get("encrypted")) is not bool):
+                return result("UNKNOWN", "Volume identity or encryption flag missing, invalid, or duplicated.")
+            seen.add(volume_id)
+            unencrypted += volume["encrypted"] is False
+        if unencrypted:
+            return result("REVIEW", f"{unencrypted} of {len(data)} attached EBS volumes report Encrypted=False.")
+        return result("PASS", f"All {len(data)} attached EBS volumes report Encrypted=True.")
     if kind == "s3":
         if not isinstance(data, dict) or any(type(data.get(k)) is not bool for k in BPA_FLAGS):
             return result("UNKNOWN", "All four bucket-level settings must be present as booleans.")

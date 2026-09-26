@@ -4,6 +4,18 @@ from app.config import ConfigurationError, Settings
 
 
 class ConfigurationTest(unittest.TestCase):
+    def test_instance_only_scope_is_valid_and_deduplicated(self):
+        settings = Settings.from_environment({"AWS_REGION": "us-east-1", "ALLOWED_INSTANCES": " i-0123456789abcdef0,i-0123456789abcdef0,i-12345678 "})
+        self.assertEqual(settings.instances, ("i-0123456789abcdef0", "i-12345678"))
+        self.assertEqual(settings.buckets, ())
+        self.assertEqual(settings.security_groups, ())
+
+    def test_invalid_instance_scope_rejected(self):
+        for value in ("*", "i-invalid", "i-12345678,", "arn:aws:ec2:us-east-1:123456789012:instance/i-12345678",
+                      ",".join(f"i-{index:017x}" for index in range(101))):
+            with self.subTest(value=value), self.assertRaises(ConfigurationError):
+                Settings.from_environment({"AWS_REGION": "us-east-1", "ALLOWED_INSTANCES": value})
+
     def test_explicit_scope_and_deduplication(self):
         settings = Settings.from_environment({"AWS_REGION": "us-east-1", "ALLOWED_BUCKETS": " demo-bucket, demo-bucket ", "ALLOWED_SECURITY_GROUPS": "sg-12345678"})
         self.assertEqual(settings.region, "us-east-1")

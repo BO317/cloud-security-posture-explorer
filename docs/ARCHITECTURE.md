@@ -19,8 +19,11 @@ flowchart TD
     Provider --> SDK
     SDK --> S3[S3 GetPublicAccessBlock]
     SDK --> EC2[EC2 DescribeSecurityGroups]
+    SDK --> Instances[EC2 DescribeInstances: allowlisted IDs]
+    Instances --> Volumes[EC2 DescribeVolumes: mapped EBS IDs]
     S3 --> Evidence[Validated observations or collection errors]
     EC2 --> Evidence
+    Volumes --> Evidence
     Evidence --> Checks[Pure PASS / REVIEW / UNKNOWN checks]
     Checks --> HTML[Server-rendered HTML with reasons and timestamps]
     HTML --> User
@@ -44,6 +47,12 @@ is used. CloudWatch signals, alarms, and incident exercises remain future work.
 - Exactly one matching security group and a complete rule list are required.
   Unexpected continuation tokens, duplicate/wrong groups, missing fields, and
   unsupported source references are UNKNOWN. No partial response is promoted to PASS.
+- Each `ALLOWED_INSTANCES` entry adds an EBS Volume Encryption check using
+  DescribeInstances followed by DescribeVolumes for the mapped volume IDs. All
+  attached volumes must have `Encrypted=True` to PASS; any false yields REVIEW
+  only when all evidence is complete. Missing/partial data, mismatched attachments,
+  API errors, or no volume evidence yield UNKNOWN. Reads are sequential rather than
+  atomic; detected attachment changes cannot produce PASS.
 - TCP 22/3389 checks include numeric TCP protocol 6 and all-protocol rules.
   UDP-only rules do not trigger this TCP-only criterion. UNKNOWN overrides other
   findings for that resource; remaining resources still retain their own results.
@@ -52,6 +61,8 @@ is used. CloudWatch signals, alarms, and incident exercises remain future work.
   Empty or unknown evidence is INCOMPLETE; completeness is distinct from compliance.
 - The journal records safe category/reason, target ordinal, scan ID, time, and AWS
   request ID. Resource names, raw responses, and raw exception messages are omitted.
+  Target order is buckets, groups, then instances. The `api_requests` field retains
+  each attempted API operation and its request ID under the same scan correlation ID.
 
 See [application contract and tests](../app/README.md),
 [deployment instructions](DEPLOYMENT_EC2.md), and [IAM review](IAM_POLICY_REVIEW.md).

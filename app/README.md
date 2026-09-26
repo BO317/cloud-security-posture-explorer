@@ -14,6 +14,7 @@ python3 -m venv .venv
 export AWS_REGION=us-east-1
 export ALLOWED_BUCKETS=your-personal-lab-bucket
 export ALLOWED_SECURITY_GROUPS=sg-0123456789abcdef0
+export ALLOWED_INSTANCES=i-0123456789abcdef0
 .venv/bin/python -m app.server --port 8000
 ```
 
@@ -32,10 +33,11 @@ Stop with Ctrl+C. See [EC2 deployment](../docs/DEPLOYMENT_EC2.md) for systemd.
 | `AWS_REGION` | Explicit SDK region; `AWS_DEFAULT_REGION` is a fallback only when `AWS_REGION` is absent |
 | `ALLOWED_BUCKETS` | Comma-separated bucket names; no wildcards, ARNs, or empty entries |
 | `ALLOWED_SECURITY_GROUPS` | Comma-separated security group IDs; no discovery or filters from the browser |
+| `ALLOWED_INSTANCES` | Optional comma-separated EC2 instance IDs for attached EBS volume encryption checks; empty disables this check |
 | `--port` | HTTP port, default 8000; host remains fixed at `127.0.0.1` |
 
 Allowlist entries are trimmed and deduplicated, with a maximum of 100 per list.
-Either list may be empty to skip that service. Both empty, an absent region, or
+Any list may be empty to skip those targets. All three empty, an absent region, or
 invalid configuration makes `/` return 503 with UNKNOWN and performs no AWS reads.
 The lists are read from the process environment for each scan; restart systemd
 after editing its environment file. SDK timeouts are fixed at 3 seconds connect,
@@ -53,7 +55,9 @@ timeouts are separate (see deployment example). These are not a whole-scan deadl
 | Other methods | 405; no write routes |
 
 Resources are read sequentially, one explicit bucket or security group per API
-request. One failed resource does not suppress the others. The scan has a UUID,
+request. Each allowlisted instance adds a DescribeInstances request and, when its
+volume mappings are valid, a DescribeVolumes request for only those volume IDs.
+One failed resource does not suppress the others. The scan has a UUID,
 start/end timestamps, and per-resource observation/failed-attempt times in UTC.
 Timestamps are collection times, not configuration modification times. The UI is
 a snapshot: reload to collect again. There is no background polling, historical
@@ -73,6 +77,21 @@ observations) makes evidence INCOMPLETE.
 
 ## Check contract and conservative UNKNOWN behavior
 
+- **EBS Volume Encryption:** one result per `ALLOWED_INSTANCES` entry. Read the
+  exact instance using `describe_instances(InstanceIds=[id])`, extract its EBS
+  mappings, and call `describe_volumes(VolumeIds=[...])` for those IDs only. Every
+  volume must be returned exactly once with a strict boolean `Encrypted` and a
+  confirmed `attached` association to that instance. All true is PASS; any false
+  with otherwise complete evidence is REVIEW. Missing/malformed fields, permission
+  errors, API failures, partial responses, duplicate/unexpected IDs, and changing
+  attachment states are UNKNOWN. UNKNOWN overrides even a known unencrypted volume.
+  An empty mapping list is explicitly UNKNOWN (no attached EBS evidence), never a
+  vacuous PASS; no unscoped volume query is issued. Instance-store disks, unattached
+  volumes, snapshots, KMS key policies, and encryption-by-default settings are not
+  assessed. These sequential reads are a point-in-time observation, not an atomic
+  snapshot; detected attachment inconsistencies require a fresh collection.
+  Both EC2 responses are requested without pagination limits. An unexpected
+  continuation token is treated as incomplete evidence, not silently ignored.
 - **S3:** `get_public_access_block(Bucket=...)` reads four strict boolean fields.
   All true is PASS, any false with otherwise complete evidence is REVIEW, and
   API errors, missing flags, or invalid values are UNKNOWN. Even
@@ -115,7 +134,8 @@ Provider tests inject clients, block network connects, and use botocore Stubber
 for real SDK operation/parameter validation. Credential lookup is mocked for
 unsigned test clients; no test keys are created. Cases include API success,
 AccessDenied, credential/timeout/connection failures, malformed/partial data,
-empty results, scope isolation, protocol aliases, mixed good/bad rules, and audit
+empty results, scope isolation, protocol aliases, encrypted/unencrypted EBS volumes,
+incomplete volume attachments, mixed good/bad rules, and audit
 redaction. A real loopback HTTP test verifies health during a blocked collection.
 Synthetic fixtures remain only as test inputs; the running server never imports
 or falls back to them. The dependency lock records the tested versions; update it
@@ -131,8 +151,11 @@ deliberately alongside test execution rather than silently updating deployments.
 - `deploy/`: illustrative environment, systemd unit, and role permissions policy.
 
 Observation logs contain scan ID, zero-based target index (buckets first, then
-groups, in allowlist order), kind, timestamp, status, safe reason/diagnostic, and
-AWS request ID when available. They omit resource names, response payloads, and
+groups, then instances, in allowlist order), kind, timestamp, status, safe
+reason/diagnostic, and AWS request ID when available. `request_id` identifies the
+last attempted API call; `api_requests` preserves operation names and request IDs
+for every attempted call, including both EBS collection stages. A failed call
+without an AWS response has a null request ID. They omit resource names, response payloads, and
 exception messages. Retain the deployed configuration/version privately to map
 indexes during an investigation. Logs are local operational evidence, not a
 tamper-proof audit trail; CloudTrail/central logging is not configured here.

@@ -8,9 +8,9 @@
       "Resource": ["arn:aws:s3:::replace-with-your-lab-bucket"]
     },
     {
-      "Sid": "ReadSecurityGroupsInSelectedRegion",
+      "Sid": "ReadEC2MetadataInSelectedRegion",
       "Effect": "Allow",
-      "Action": "ec2:DescribeSecurityGroups",
+      "Action": ["ec2:DescribeSecurityGroups", "ec2:DescribeInstances", "ec2:DescribeVolumes"],
       "Resource": "*",
       "Condition": {"StringEquals": {"ec2:Region": "us-east-1"}}
     }

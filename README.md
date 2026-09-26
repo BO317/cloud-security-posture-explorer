@@ -9,7 +9,7 @@ Build an end-to-end story: define a workload, deploy it as code, explain its cus
 ## Current status
 
 - Completed before this plan: a standalone Terraform S3 bucket exercise, AWS CLI authentication, and initial exploration of variables, outputs, and state.
-- Implemented: boto3 read-only collection of allowlisted S3 buckets and security groups, PASS/REVIEW/UNKNOWN results, independent liveness, and offline automated tests. See [application instructions](app/README.md).
+- Implemented: boto3 read-only checks for allowlisted S3 buckets, security groups, and EBS encryption on allowlisted EC2 instances; PASS/REVIEW/UNKNOWN results, independent liveness, and offline automated tests. See [application instructions](app/README.md).
 - Deployment baseline: the operator reports EC2 hosting with systemd and an instance role, without static AWS keys. This provider update still requires deployment and live verification; see [EC2 instructions](docs/DEPLOYMENT_EC2.md).
 - Not implemented here: built-in authentication, alarms, notifications, runbook validation, and incident exercise. Live inventory must remain behind an authenticated access path.
 - Existing lab bucket is **not** the Terraform state backend or an application data bucket. Do not repurpose or delete it without checking its state and contents.
@@ -50,11 +50,14 @@ python3 -m venv .venv
 export AWS_REGION=us-east-1
 export ALLOWED_BUCKETS=your-personal-lab-bucket
 export ALLOWED_SECURITY_GROUPS=sg-0123456789abcdef0
+export ALLOWED_INSTANCES=i-0123456789abcdef0
 .venv/bin/python -m app.server --port 8000
 ```
 
-Replace sample identifiers with explicit personal-lab resources. Either resource
-list can be empty, but not both. Tests require no AWS access or credentials; live
+Replace sample identifiers with explicit personal-lab resources. Any resource
+list can be empty, but at least one must be set. `ALLOWED_INSTANCES` enables EBS
+encryption checks and requires `ec2:DescribeInstances` and `ec2:DescribeVolumes`
+on the existing role. Tests require no AWS access or credentials; live
 reads use the boto3 default credential chain and EC2 role. On Windows use
 `.venv\Scripts\python.exe` and PowerShell `$env:NAME='value'` assignments.
 

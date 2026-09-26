@@ -2,13 +2,17 @@
 
 This is a review of the application's required permissions and an example policy,
 not an inspection or modification of the currently deployed role. The operator
-reports both actions are already granted. No additional action is required for
-the implemented checks.
+reports the S3 and security-group actions are already granted. Enabling EBS
+encryption checks additionally requires `ec2:DescribeInstances` and
+`ec2:DescribeVolumes` on the existing instance role. This update does not apply
+those permissions to AWS.
 
 | SDK operation | IAM action | Scope |
 | --- | --- | --- |
 | `s3.get_public_access_block(Bucket=name)` | `s3:GetBucketPublicAccessBlock` | Exact configured bucket ARNs; no object `/*` suffix |
 | `ec2.describe_security_groups(GroupIds=[id])` | `ec2:DescribeSecurityGroups` | `Resource: "*"`; restrict `ec2:Region` to the configured region |
+| `ec2.describe_instances(InstanceIds=[id])` | `ec2:DescribeInstances` | `Resource: "*"`; same region restriction |
+| `ec2.describe_volumes(VolumeIds=[...])` | `ec2:DescribeVolumes` | `Resource: "*"`; same region restriction |
 
 Use [workload-policy.example.json](../app/deploy/workload-policy.example.json) as a
 reviewable example. Replace its bucket and region placeholders; do not attach a
@@ -26,6 +30,16 @@ will not provide the intended access. Its documented regional condition is
 role can still describe other groups in the permitted region: the allowlist is
 application behavior, not an IAM isolation boundary.
 [AWS EC2 authorization reference](https://docs.aws.amazon.com/service-authorization/latest/reference/list_ec2.html)
+
+`DescribeInstances` and `DescribeVolumes` likewise require `Resource: "*"` and
+support `ec2:Region`; they cannot be restricted to individual instance/volume ARNs
+with these actions. The provider requests only explicit `ALLOWED_INSTANCES` and
+their mapped EBS volume IDs, but that application scope is not an IAM boundary.
+The example policy includes all three EC2 reads. If EBS checks remain disabled,
+the two new permissions can be omitted. No KMS permission, volume-content access,
+or encryption/write action is required to inspect the `Encrypted` metadata.
+See [DescribeInstances](https://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_DescribeInstances.html)
+and [DescribeVolumes](https://docs.aws.amazon.com/boto3/latest/reference/services/ec2/client/describe_volumes.html).
 
 ## Identity and boundaries
 
@@ -62,5 +76,5 @@ evidence becomes UNKNOWN rather than requiring new permissions. There is no
 CloudWatch API integration; local systemd journal logging adds no AWS permissions.
 
 Operator SSH/SSM access and deployment tooling permissions are separate from
-the application role and are outside this two-action policy. Do not broaden the
+the application role and are outside this four-action policy. Do not broaden the
 workload role merely to make operator tasks convenient.

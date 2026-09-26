@@ -14,6 +14,8 @@ from app.aws_provider import collect_from_environment
 from app.config import ConfigurationError
 
 LOGGER = logging.getLogger(__name__)
+CHECK_LABELS = {"s3": "S3 bucket-level BPA", "security_group": "Security group inbound",
+                "ebs_encryption": "EBS Volume Encryption"}
 
 
 class ThreadedWSGIServer(ThreadingMixIn, WSGIServer):
@@ -28,7 +30,7 @@ def dashboard(resources, region="unavailable", scan_id="unavailable", started_at
     for resource in resources:
         result = check(resource["kind"], resource["observation"])
         counts[result.status] += 1
-        cells = (resource["name"], "S3 bucket-level BPA" if resource["kind"] == "s3" else "Security group inbound", result.reason, result.observed_at or "Unavailable — observation time unknown")
+        cells = (resource["name"], CHECK_LABELS.get(resource["kind"], "Unsupported check"), result.reason, result.observed_at or "Unavailable — observation time unknown")
         rows.append(f'<tr><td>{escape(cells[0])}</td><td>{escape(cells[1])}</td><td class="{result.status}">{result.status}</td><td>{escape(cells[2])}</td><td>{escape(cells[3])}</td></tr>')
     completeness = "INCOMPLETE" if counts["UNKNOWN"] or not resources else "COMPLETE"
     evaluated = datetime.now(timezone.utc).isoformat(timespec="seconds")

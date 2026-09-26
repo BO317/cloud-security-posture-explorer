@@ -102,6 +102,84 @@ def safe_request_id(response):
     return value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9+=/_-]{1,200}", value) else None
 
 
+def read_with_audit(client, operation, api_requests, **parameters):
+    """Record each attempted operation, without its inventory-bearing parameters."""
+    entry = {"operation": operation, "request_id": None}
+    api_requests.append(entry)
+    response = getattr(client, operation)(**parameters)
+    entry["request_id"] = safe_request_id(response)
+    return response
+
+
+def attached_volume_ids(response, instance_id):
+    """Require a complete response for exactly the requested instance."""
+    if not isinstance(response, dict) or response.get("NextToken") not in (None, ""):
+        raise EvidenceError("Instance response missing, malformed, or partial.")
+    reservations = response.get("Reservations")
+    if not isinstance(reservations, list) or len(reservations) != 1:
+        raise EvidenceError("Requested instance missing or response ambiguous.")
+    reservation = reservations[0]
+    instances = reservation.get("Instances") if isinstance(reservation, dict) else None
+    if not isinstance(instances, list) or len(instances) != 1:
+        raise EvidenceError("Requested instance missing or response ambiguous.")
+    instance = instances[0]
+    if not isinstance(instance, dict) or instance.get("InstanceId") != instance_id:
+        raise EvidenceError("Returned instance does not match requested scope.")
+    mappings = instance.get("BlockDeviceMappings")
+    if not isinstance(mappings, list) or not mappings:
+        raise EvidenceError("No complete attached EBS volume mappings available.")
+    volume_ids = []
+    for mapping in mappings:
+        ebs = mapping.get("Ebs") if isinstance(mapping, dict) else None
+        if not isinstance(ebs, dict):
+            raise EvidenceError("EBS mapping missing or malformed.")
+        volume_id = ebs.get("VolumeId")
+        if (not isinstance(volume_id, str)
+                or not re.fullmatch(r"vol-(?:[0-9a-f]{8}|[0-9a-f]{17})", volume_id)
+                or volume_id in volume_ids or ebs.get("Status") != "attached"):
+            raise EvidenceError("EBS volume identity or stable attachment missing, invalid, or duplicated.")
+        volume_ids.append(volume_id)
+    return volume_ids
+
+
+def normalize_volumes(response, instance_id, expected_ids):
+    """Match all requested volumes; never evaluate just the returned subset."""
+    if not isinstance(response, dict) or response.get("NextToken") not in (None, ""):
+        raise EvidenceError("Volume response missing, malformed, or partial.")
+    volumes = response.get("Volumes")
+    if not isinstance(volumes, list) or len(volumes) != len(expected_ids):
+        raise EvidenceError("Attached volume results incomplete or ambiguous.")
+    expected = set(expected_ids)
+    seen = set()
+    normalized = []
+    for volume in volumes:
+        if not isinstance(volume, dict):
+            raise EvidenceError("Volume data malformed.")
+        volume_id = volume.get("VolumeId")
+        if not isinstance(volume_id, str) or volume_id not in expected or volume_id in seen:
+            raise EvidenceError("Returned volume does not match requested scope or is duplicated.")
+        attachments = volume.get("Attachments")
+        if not isinstance(attachments, list) or any(not isinstance(item, dict) for item in attachments):
+            raise EvidenceError("Volume attachments missing or malformed.")
+        matches = [item for item in attachments if item.get("InstanceId") == instance_id]
+        if (len(matches) != 1 or matches[0].get("VolumeId") != volume_id
+                or matches[0].get("State") != "attached"):
+            raise EvidenceError("Volume attachment to the requested instance could not be confirmed.")
+        if type(volume.get("Encrypted")) is not bool:
+            raise EvidenceError("Volume encryption flag missing or invalid.")
+        seen.add(volume_id)
+        normalized.append({"volume_id": volume_id, "encrypted": volume["Encrypted"]})
+    return normalized
+
+
+def instance_volume_data(client, instance_id, api_requests):
+    response = read_with_audit(client, "describe_instances", api_requests, InstanceIds=[instance_id])
+    volume_ids = attached_volume_ids(response, instance_id)
+    # Never call DescribeVolumes with an empty list (which could broaden scope).
+    response = read_with_audit(client, "describe_volumes", api_requests, VolumeIds=volume_ids)
+    return normalize_volumes(response, instance_id, volume_ids)
+
+
 class AWSProvider:
     def __init__(self, settings, session_factory=None, clock=utc_now):
         self.settings = settings
@@ -116,9 +194,11 @@ class AWSProvider:
         clients = {}
         targets = [("s3", name) for name in self.settings.buckets]
         targets += [("security_group", name) for name in self.settings.security_groups]
+        targets += [("ebs_encryption", name) for name in self.settings.instances]
         for ordinal, (kind, name) in enumerate(targets):
             data, error, request_id = None, None, None
             diagnostic = None
+            api_requests = []
             try:
                 if session is None:
                     # No explicit credentials or profile: EC2 uses its instance role
@@ -129,17 +209,21 @@ class AWSProvider:
                     clients[service] = session.client(service, region_name=self.settings.region, config=SDK_CONFIG)
                 client = clients[service]
                 if kind == "s3":
-                    response = client.get_public_access_block(Bucket=name)
+                    response = read_with_audit(client, "get_public_access_block", api_requests, Bucket=name)
                     request_id = safe_request_id(response)
                     if not isinstance(response, dict):
                         raise EvidenceError("Response malformed.")
                     data = response.get("PublicAccessBlockConfiguration")
-                else:
-                    response = client.describe_security_groups(GroupIds=[name])
+                elif kind == "security_group":
+                    response = read_with_audit(client, "describe_security_groups", api_requests, GroupIds=[name])
                     request_id = safe_request_id(response)
                     data = security_group_data(response, name)
+                else:
+                    data = instance_volume_data(client, name, api_requests)
             except ClientError as exc:
                 request_id = safe_request_id(exc.response)
+                if api_requests:
+                    api_requests[-1]["request_id"] = request_id
                 code = exc.response.get("Error", {}).get("Code")
                 error = "access_denied" if code in ("AccessDenied", "AccessDeniedException", "UnauthorizedOperation", "AuthFailure") else "api_error"
             except BotoCoreError as exc:
@@ -154,12 +238,15 @@ class AWSProvider:
                 error = "unexpected_error"
                 diagnostic = type(exc).__name__
             observed_at = self.clock()
+            if api_requests:
+                request_id = api_requests[-1]["request_id"]
             observation = {"observed_at": observed_at, "data": data, "error": error}
             result = check(kind, observation)
             LOGGER.info(json.dumps({"event": "posture_observation", "scan_id": scan_id,
                                     "target_index": ordinal, "kind": kind, "observed_at": observed_at,
                                     "status": result.status, "error": error,
-                                    "reason": result.reason, "diagnostic": diagnostic, "request_id": request_id}))
+                                    "reason": result.reason, "diagnostic": diagnostic, "request_id": request_id,
+                                    "api_requests": api_requests}))
             resources.append({"kind": kind, "name": name, "observation": observation})
         for client in clients.values():
             try:

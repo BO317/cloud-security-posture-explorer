@@ -8,7 +8,9 @@ below are examples. Preserve the existing working unit/configuration for rollbac
 ## Prerequisites and access
 
 - Python 3.10+ with venv, Git, systemd, and an existing EC2 instance profile.
-- The role grants the two reads in [IAM_POLICY_REVIEW.md](IAM_POLICY_REVIEW.md).
+- The role grants the reads for enabled checks in [IAM_POLICY_REVIEW.md](IAM_POLICY_REVIEW.md).
+  EBS encryption adds `ec2:DescribeInstances` and `ec2:DescribeVolumes` to the
+  existing role; no static credentials or write permissions are required.
 - Instance Metadata Service is accessible to the process. Require IMDSv2 in the
   instance configuration; current boto3 supports role credentials through IMDS.
 - Outbound DNS/HTTPS reaches the required AWS service endpoints, directly or
@@ -66,14 +68,19 @@ Example contents:
 AWS_REGION=us-east-1
 ALLOWED_BUCKETS=your-personal-lab-bucket,another-personal-lab-bucket
 ALLOWED_SECURITY_GROUPS=sg-0123456789abcdef0
+ALLOWED_INSTANCES=i-0123456789abcdef0
 AWS_METADATA_SERVICE_TIMEOUT=2
 AWS_METADATA_SERVICE_NUM_ATTEMPTS=1
 ```
 
 Do not copy over an existing environment file without retaining its current
-values. Comma-separated allowlists are explicit names/IDs, not patterns. Either
-list can be empty; both empty produce UNKNOWN with no AWS calls. Up to 100 unique
-entries per service are supported. Use a small scope: scans are sequential and
+values. Comma-separated allowlists are explicit names/IDs, not patterns. Any
+list can be empty; all three empty produce UNKNOWN with no AWS calls. Up to 100 unique
+entries per list are supported. Leave `ALLOWED_INSTANCES` empty or unset to keep
+EBS checks disabled. Setting it enables one aggregate EBS encryption result per
+instance, based on its attached volumes. Missing permissions or incomplete volume
+results produce UNKNOWN; no attached-volume evidence also produces UNKNOWN.
+Use a small scope: scans are sequential and
 total latency increases with each target. S3 bucket names are global; configure
 the intended region and restrict ownership through IAM as discussed in the review.
 
@@ -145,8 +152,9 @@ offline tests do not establish that deployment succeeded.
 
 Use the page scan ID to find `posture_observation` JSON events in the journal.
 Each event identifies a target by its zero-based index in the configured lists
-(buckets first, then groups). It records status, safe diagnostic, and AWS request
-ID when available; it intentionally omits inventory and raw AWS messages.
+(buckets first, then groups, then instances). It records status, safe diagnostic, and AWS request
+ID when available; `api_requests` retains both DescribeInstances and DescribeVolumes
+operation/request IDs for EBS checks. It intentionally omits inventory and raw AWS messages.
 
 - `access_denied`: inspect the role, bucket resource scope, regional conditions,
   and any explicit denies/SCPs/endpoint policies.
@@ -156,6 +164,8 @@ ID when available; it intentionally omits inventory and raw AWS messages.
   is UNKNOWN by design.
 - `invalid_response`: check incomplete responses or unsupported source references.
   Nonempty prefix-list/security-group sources are deliberately not resolved.
+  For EBS, inspect the safe diagnostic for missing mappings, volumes, encryption
+  flags, or attachment inconsistencies. Retry after any attachment operation settles.
 - `unexpected_error`: inspect the deployed version and reproduce with offline
   tests. The application does not print raw exceptions containing inventory.
 

@@ -24,6 +24,7 @@ class Settings:
     region: str
     buckets: tuple[str, ...]
     security_groups: tuple[str, ...]
+    instances: tuple[str, ...] = ()
 
     @classmethod
     def from_environment(cls, environ=None):
@@ -33,6 +34,7 @@ class Settings:
             raise ConfigurationError("Set AWS_REGION to an explicit AWS region.")
         buckets = _allowlist(env, "ALLOWED_BUCKETS", r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]")
         groups = _allowlist(env, "ALLOWED_SECURITY_GROUPS", r"sg-(?:[0-9a-f]{8}|[0-9a-f]{17})")
-        if not buckets and not groups:
-            raise ConfigurationError("Configure ALLOWED_BUCKETS and/or ALLOWED_SECURITY_GROUPS; empty scope is UNKNOWN.")
-        return cls(region, buckets, groups)
+        instances = _allowlist(env, "ALLOWED_INSTANCES", r"i-(?:[0-9a-f]{8}|[0-9a-f]{17})")
+        if not buckets and not groups and not instances:
+            raise ConfigurationError("Configure ALLOWED_BUCKETS, ALLOWED_SECURITY_GROUPS, or ALLOWED_INSTANCES; empty scope is UNKNOWN.")
+        return cls(region, buckets, groups, instances)
