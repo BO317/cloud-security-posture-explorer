@@ -38,6 +38,12 @@ Create a small, read-only AWS security posture application and use it as a **sim
 
 ## Delivery milestones and acceptance criteria
 
+Current implementation note: M1 synthetic prototype is complete. The operator
+reports an EC2/systemd/instance-role deployment, and the application now includes
+an allowlisted boto3 provider tested offline. M2 is not marked complete here:
+this revision still requires EC2 rollout, live-data verification, and validation
+that unauthorized dashboard access is denied. See `DEPLOYMENT_EC2.md`.
+
 ### M0. Guardrails and baseline
 
 - Confirm AWS Free/Paid plan, available credits, eligible services, region, and budget alert destination.

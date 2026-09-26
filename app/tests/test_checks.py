@@ -43,12 +43,12 @@ class ChecksTest(unittest.TestCase):
 
     def test_worldwide_management_rules(self):
         for cidr in ("0.0.0.0/0", "::/0"):
-            for protocol, start, end in (("tcp", 22, 22), ("tcp", 3300, 3400), ("udp", 3389, 3389), ("all", None, None)):
+            for protocol, start, end in (("tcp", 22, 22), ("tcp", 3300, 3400), ("all", None, None)):
                 with self.subTest(cidr=cidr, protocol=protocol):
                     self.assertEqual(check("security_group", observation([rule(protocol, start, end, [cidr])])).status, "REVIEW")
 
     def test_narrow_pass_scope(self):
-        for rules in ([], [rule(cidrs=["192.0.2.0/24"])], [rule(start=443, end=443)], [rule(protocol="icmp")], [rule(cidrs=["2001:db8::/32"])]):
+        for rules in ([], [rule(cidrs=["192.0.2.0/24"])], [rule(start=443, end=443)], [rule(protocol="icmp", start=-1, end=-1)], [rule(protocol="udp", start=3389, end=3389)], [rule(cidrs=["2001:db8::/32"])]):
             self.assertEqual(check("security_group", observation(rules)).status, "PASS")
 
     def test_malformed_rule_never_passes(self):

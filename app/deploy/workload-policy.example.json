@@ -1,0 +1,18 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadSelectedBucketPublicAccessBlock",
+      "Effect": "Allow",
+      "Action": "s3:GetBucketPublicAccessBlock",
+      "Resource": ["arn:aws:s3:::replace-with-your-lab-bucket"]
+    },
+    {
+      "Sid": "ReadSecurityGroupsInSelectedRegion",
+      "Effect": "Allow",
+      "Action": "ec2:DescribeSecurityGroups",
+      "Resource": "*",
+      "Condition": {"StringEquals": {"ec2:Region": "us-east-1"}}
+    }
+  ]
+}

@@ -9,8 +9,9 @@ Build an end-to-end story: define a workload, deploy it as code, explain its cus
 ## Current status
 
 - Completed before this plan: a standalone Terraform S3 bucket exercise, AWS CLI authentication, and initial exploration of variables, outputs, and state.
-- Implemented: a local, read-only posture application using eight synthetic observations, PASS/REVIEW/UNKNOWN results, an independent liveness endpoint, and 12 automated tests. See [local app instructions](app/README.md).
-- Not yet built: live AWS collection, workload hosting, authentication, alarms, notifications, runbook validation, and incident exercise.
+- Implemented: boto3 read-only collection of allowlisted S3 buckets and security groups, PASS/REVIEW/UNKNOWN results, independent liveness, and offline automated tests. See [application instructions](app/README.md).
+- Deployment baseline: the operator reports EC2 hosting with systemd and an instance role, without static AWS keys. This provider update still requires deployment and live verification; see [EC2 instructions](docs/DEPLOYMENT_EC2.md).
+- Not implemented here: built-in authentication, alarms, notifications, runbook validation, and incident exercise. Live inventory must remain behind an authenticated access path.
 - Existing lab bucket is **not** the Terraform state backend or an application data bucket. Do not repurpose or delete it without checking its state and contents.
 
 ## Proposed MVP
@@ -25,10 +26,12 @@ Build an end-to-end story: define a workload, deploy it as code, explain its cus
 
 ```text
 README.md
-app/                      # Local synthetic application, tests, and run instructions
+app/                      # AWS provider, checks, WSGI server, tests, deployment examples
 docs/
   PROJECT_PLAN.md
   ARCHITECTURE.md
+  DEPLOYMENT_EC2.md
+  IAM_POLICY_REVIEW.md
   SECURITY_AND_COST.md
   INCIDENT_RUNBOOK.md
   EXERCISE_RECORD_TEMPLATE.md
@@ -36,23 +39,37 @@ docs/
 
 The earlier Terraform exercise is separate and is not included in this checkout.
 
-## Run the local demo
+## Run and test
 
-Requires Python 3.10 or newer; no third-party packages or AWS credentials.
-From the repository root:
+Requires Python 3.10 or newer and boto3. From the repository root on Linux/EC2:
 
 ```sh
-python -m app.server --port 8000
-python -m unittest discover -s app/tests -v
+python3 -m venv .venv
+.venv/bin/python -m pip install -r app/requirements-lock.txt
+.venv/bin/python -m unittest discover -s app/tests -v
+export AWS_REGION=us-east-1
+export ALLOWED_BUCKETS=your-personal-lab-bucket
+export ALLOWED_SECURITY_GROUPS=sg-0123456789abcdef0
+.venv/bin/python -m app.server --port 8000
 ```
 
-Open http://127.0.0.1:8000/. The server binds to loopback only. `/healthz`
-reports application liveness, not scan success. All displayed resources and
-observation timestamps are synthetic. Stop the server with Ctrl+C.
+Replace sample identifiers with explicit personal-lab resources. Either resource
+list can be empty, but not both. Tests require no AWS access or credentials; live
+reads use the boto3 default credential chain and EC2 role. On Windows use
+`.venv\Scripts\python.exe` and PowerShell `$env:NAME='value'` assignments.
+
+Open http://127.0.0.1:8000/ locally or through authenticated SSH forwarding. The
+server binds to loopback only. `/healthz` returns `{"liveness":"ok"}` independently
+of AWS collection. Results contain actual collection/attempt timestamps. Synthetic
+fixtures are test-only and never used as a fallback. Stop with Ctrl+C.
 
 ## Before any deployment
 
-Review the plan and AWS account plan/credit balance, set a cost budget, and design authenticated access before deploying a new AWS resource. The local sample-data prototype is implemented; deployment remains future work. See `docs/PROJECT_PLAN.md` for acceptance criteria and sequence.
+Review the plan and AWS account plan/credit balance, set a cost budget, and retain
+authenticated access. This update creates no AWS resources and performs no writes.
+Review the [architecture diagram](docs/ARCHITECTURE.md),
+[EC2 rollout/rollback guide](docs/DEPLOYMENT_EC2.md), and
+[IAM policy review](docs/IAM_POLICY_REVIEW.md) before enabling live collection.
 
 ## Portfolio integrity
 

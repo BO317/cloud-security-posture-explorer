@@ -1,0 +1,32 @@
+[Unit]
+Description=Cloud Security Posture Explorer (read-only portfolio workload)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=posture
+Group=posture
+WorkingDirectory=/opt/cloud-security-posture-explorer
+EnvironmentFile=/etc/cloud-security-posture.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=AWS_SHARED_CREDENTIALS_FILE=/dev/null
+Environment=AWS_CONFIG_FILE=/dev/null
+Environment=AWS_EC2_METADATA_DISABLED=false
+UnsetEnvironment=AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_SECURITY_TOKEN AWS_PROFILE AWS_DEFAULT_PROFILE AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE AWS_CONTAINER_CREDENTIALS_RELATIVE_URI AWS_CONTAINER_CREDENTIALS_FULL_URI AWS_EC2_METADATA_SERVICE_ENDPOINT
+ExecStart=/opt/cloud-security-posture-explorer/.venv/bin/python -m app.server --port 8000
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

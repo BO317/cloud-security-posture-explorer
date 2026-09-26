@@ -1,100 +1,144 @@
-# Local Cloud Security Posture Explorer
+# Cloud Security Posture Explorer application
 
-Implemented: a read-only, synthetic local demonstration of milestone M1.
-Not implemented: live AWS collection, deployment, authentication, monitoring,
-remediation, or incident exercises. This is not production-ready software.
-No AWS credentials, company data, network API calls, or third-party packages
-are used. Terraform and AWS resources are outside this implementation.
+Read-only AWS collection with boto3, Python 3.10+, standard-library `wsgiref`,
+server-rendered HTML, and `unittest`. No JavaScript framework or remediation.
+The application remains a portfolio workload, not a production security product.
 
-## Run and test
+## Install, configure, and run
 
-Requires Python 3.10 or newer. From the repository root:
+From the repository root, using Linux/EC2:
 
 ```sh
-python -m app.server
+python3 -m venv .venv
+.venv/bin/python -m pip install -r app/requirements-lock.txt
+export AWS_REGION=us-east-1
+export ALLOWED_BUCKETS=your-personal-lab-bucket
+export ALLOWED_SECURITY_GROUPS=sg-0123456789abcdef0
+.venv/bin/python -m app.server --port 8000
 ```
 
-Open http://127.0.0.1:8000 and stop with Ctrl+C. An alternate port can be selected
-with `python -m app.server --port 8001`. On Windows, `py` may be used instead of
-`python` if that is the installed Python launcher. No virtual environment or
-package installation is required.
+Replace example resource identifiers. On Windows use `.venv\Scripts\python.exe`
+and PowerShell environment assignments such as `$env:AWS_REGION='us-east-1'`.
+Use the EC2 instance role for live collection. No static keys are needed or
+accepted as application arguments. The SDK uses its default credential chain;
+the deployment unit isolates the service from local profiles and static-key
+environment variables so that EC2 role credentials are selected.
+
+Open http://127.0.0.1:8000/ locally, or through authenticated SSH forwarding.
+Stop with Ctrl+C. See [EC2 deployment](../docs/DEPLOYMENT_EC2.md) for systemd.
+
+| Setting | Meaning |
+| --- | --- |
+| `AWS_REGION` | Explicit SDK region; `AWS_DEFAULT_REGION` is a fallback only when `AWS_REGION` is absent |
+| `ALLOWED_BUCKETS` | Comma-separated bucket names; no wildcards, ARNs, or empty entries |
+| `ALLOWED_SECURITY_GROUPS` | Comma-separated security group IDs; no discovery or filters from the browser |
+| `--port` | HTTP port, default 8000; host remains fixed at `127.0.0.1` |
+
+Allowlist entries are trimmed and deduplicated, with a maximum of 100 per list.
+Either list may be empty to skip that service. Both empty, an absent region, or
+invalid configuration makes `/` return 503 with UNKNOWN and performs no AWS reads.
+The lists are read from the process environment for each scan; restart systemd
+after editing its environment file. SDK timeouts are fixed at 3 seconds connect,
+5 seconds read, and two total attempts in standard retry mode. Credential metadata
+timeouts are separate (see deployment example). These are not a whole-scan deadline.
+
+## Endpoints and collection lifecycle
+
+| Method / path | Behavior |
+| --- | --- |
+| `GET /` | One live collection of configured resources and rendered results |
+| `GET /healthz` | HTTP 200, `{"liveness": "ok"}`; no configuration lookup or AWS collection |
+| `HEAD /`, `HEAD /healthz` | Same route processing, headers only; HEAD `/` also collects |
+| Other paths | 404 |
+| Other methods | 405; no write routes |
+
+Resources are read sequentially, one explicit bucket or security group per API
+request. One failed resource does not suppress the others. The scan has a UUID,
+start/end timestamps, and per-resource observation/failed-attempt times in UTC.
+Timestamps are collection times, not configuration modification times. The UI is
+a snapshot: reload to collect again. There is no background polling, historical
+store, cached PASS fallback, or claim that an old browser tab remains fresh.
+
+`ThreadingMixIn` keeps the wsgiref listener responsive during SDK waits. Only one
+posture collection may run at a time; concurrent dashboard requests receive 503
+and `Retry-After: 5`. Health requests do not acquire that lock. Missing SDK packages
+or a dead process can prevent startup; liveness independence concerns AWS/config
+failures in an otherwise running installation.
+
+Per-resource failures render UNKNOWN with HTTP 200 so partial evidence remains
+visible. A configuration or unexpected whole-page failure returns 503. Health
+200 proves neither scan completeness nor a security PASS. COMPLETE means every
+configured observation is evaluable; it may include REVIEW. Any UNKNOWN (or no
+observations) makes evidence INCOMPLETE.
+
+## Check contract and conservative UNKNOWN behavior
+
+- **S3:** `get_public_access_block(Bucket=...)` reads four strict boolean fields.
+  All true is PASS, any false with otherwise complete evidence is REVIEW, and
+  API errors, missing flags, or invalid values are UNKNOWN. Even
+  `NoSuchPublicAccessBlockConfiguration` is UNKNOWN, not an assumed set of flags.
+  This says nothing conclusive about effective public exposure: policies, ACLs,
+  account/organization controls, and directory buckets are outside the check.
+- **Security groups:** `describe_security_groups(GroupIds=[...])` must return
+  exactly the requested group with an explicit `IpPermissions` list. A complete
+  empty rule list passes; an empty `SecurityGroups` result is UNKNOWN. An unexpected
+  `NextToken` is rejected as incomplete rather than interpreting a partial result.
+- TCP 22/3389 reachable by an individual rule from `0.0.0.0/0` or `::/0` is REVIEW.
+  Port ranges and all-protocol `-1` rules are included. Numeric protocol `6` is
+  recognized as TCP. UDP alone does not trigger this TCP-only check.
+- Missing/malformed protocols, port ranges, source lists, or CIDRs produce UNKNOWN.
+  All four AWS source arrays (`IpRanges`, `Ipv6Ranges`, `UserIdGroupPairs`,
+  `PrefixListIds`) must be explicitly present, even if empty. This deliberately
+  rejects partial evidence. CIDRs must be canonical and match their address family.
+  Nonempty group references or prefix lists, and unsupported protocols, produce
+  UNKNOWN instead of being silently dropped; no extra AWS lookup permissions are
+  requested. ICMP type/code is validated; omission of both is valid for ICMPv6.
+- UNKNOWN takes precedence over both PASS and REVIEW within a resource. A known
+  risky rule followed by an incomplete rule still results in UNKNOWN.
+- This is not a reachability analysis: routing, NACLs, host firewalls, other ports,
+  other broad ranges, and combinations of narrower CIDRs are outside the check.
+
+## Tests (no AWS credentials or network access required)
 
 ```sh
-python -m unittest discover -s app/tests -v
+.venv/bin/python -m unittest discover -s app/tests -v
+.venv/bin/python -m pip check
 ```
 
-The development server binds only to `127.0.0.1`. Do not publish it through a
-proxy or tunnel. Only GET and HEAD are supported; there is no live inventory
-API or mutation route.
+Windows equivalent:
 
-## Structure
-
-```text
-app/
-  __init__.py
-  checks.py          Pure validation and PASS/REVIEW/UNKNOWN evaluation
-  sample_data.py     Eight invented observations, including simulated failures
-  server.py          WSGI HTML dashboard and independent /healthz endpoint
-  tests/            Check-logic and HTTP-handler tests
-  README.md
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s app/tests -v
 ```
 
-## Evidence contract and interpretation
+Provider tests inject clients, block network connects, and use botocore Stubber
+for real SDK operation/parameter validation. Credential lookup is mocked for
+unsigned test clients; no test keys are created. Cases include API success,
+AccessDenied, credential/timeout/connection failures, malformed/partial data,
+empty results, scope isolation, protocol aliases, mixed good/bad rules, and audit
+redaction. A real loopback HTTP test verifies health during a blocked collection.
+Synthetic fixtures remain only as test inputs; the running server never imports
+or falls back to them. The dependency lock records the tested versions; update it
+deliberately alongside test execution rather than silently updating deployments.
 
-Each fixture has a resource name, check kind, and observation with `observed_at`,
-`data`, and `error`. Timestamps must be ISO 8601 with a timezone. Fixture times
-are fixed synthetic observation/attempt times, not proof of freshness. The page
-also shows the time of local evaluation. A missing timestamp is displayed as
-unavailable and makes the result UNKNOWN; it is never invented.
+## Files and operations
 
-- S3 data contains all four bucket-level Block Public Access flags as booleans.
-  All true produces PASS; any false produces REVIEW. Missing/invalid flags
-  produce UNKNOWN. Effective public exposure remains UNKNOWN because bucket
-  policies, ACLs, and account/organization settings are outside this check.
-- Security group data is a complete normalized inbound-rule list. Each rule
-  has `protocol` (`tcp`, `udp`, `icmp`, `icmpv6`, or `all`) and a nonempty `cidrs`
-  list. TCP/UDP also require integer `from_port` and `to_port`, inclusive,
-  between 0 and 65535. Worldwide IPv4 (`0.0.0.0/0`) or IPv6 (`::/0`) rules
-  including port 22 or 3389 produce REVIEW. All-protocol worldwide rules also
-  produce REVIEW. An explicitly empty complete list passes this narrow check.
-  Other broad CIDRs, other ports, effective network paths, prefix lists, and
-  source security groups are not evaluated. Unsupported/malformed rule evidence
-  produces UNKNOWN. A future adapter must preserve unsupported sources as
-  unknown evidence, never silently drop them or default failed retrieval to `[]`.
-- Any non-null collection error overrides the data and produces UNKNOWN.
-  Missing/invalid evidence takes precedence even if another rule needs REVIEW.
-  Error payloads are not rendered. PASS never means comprehensive compliance.
+- `config.py`: validated environment scope.
+- `aws_provider.py`: boto3 reads, response normalization, observation audit events.
+- `checks.py`: pure evidence validation and evaluation.
+- `server.py`: HTML, routes, threaded wsgiref listener and scan lock.
+- `tests/`: offline unit/SDK-stub tests and loopback HTTP integration test.
+- `deploy/`: illustrative environment, systemd unit, and role permissions policy.
 
-The dashboard's COMPLETE/INCOMPLETE label describes evidence evaluation, not
-security approval: REVIEW can coexist with complete evidence. Empty fixtures or
-any UNKNOWN make evaluation INCOMPLETE. No successful live scan is claimed.
+Observation logs contain scan ID, zero-based target index (buckets first, then
+groups, in allowlist order), kind, timestamp, status, safe reason/diagnostic, and
+AWS request ID when available. They omit resource names, response payloads, and
+exception messages. Retain the deployed configuration/version privately to map
+indexes during an investigation. Logs are local operational evidence, not a
+tamper-proof audit trail; CloudTrail/central logging is not configured here.
 
-## Health is separate from posture
-
-`GET /healthz` returns HTTP 200 with:
-
-```json
-{"liveness": "ok", "mode": "synthetic", "posture_scan": "not_evaluated"}
-```
-
-This route does not load observations or run checks. UNKNOWN results do not
-turn liveness red, and HTTP 200 does not establish scan success or freshness.
-An unexpected dashboard evaluation failure returns HTTP 503 with an UNKNOWN
-message while liveness remains independently available. A future scan-health
-signal must track collection completeness, last successful observation, and
-an explicitly chosen freshness threshold separately.
-
-## Future workload identity (design only)
-
-After a separate access and cost review, an AWS SDK adapter could receive
-temporary credentials through an EC2 instance-profile role or a Lambda execution
-role, using the SDK credential provider chain. Do not embed keys or introduce
-an IAM user's static credentials. AWS describes this in its
-[SDK authentication guide](https://docs.aws.amazon.com/sdkref/latest/guide/access.html).
-
-Limit the role to required read operations for explicitly selected lab resources;
-scope resource permissions where supported and bound the account and region.
-Preserve denied, failed, partial, and unsupported responses as UNKNOWN. Protect
-the dashboard and any inventory API with authenticated, authorized access before
-adding live collection. Hosting, IAM policies, credential acquisition, and
-authentication are intentionally future work, not features of this local MVP.
+Live inventory appears on the HTML page. The application has no built-in login:
+use the loopback binding with authenticated SSH access or an already protected
+local reverse proxy. Do not expose an unauthenticated proxy to this service.
+See [architecture](../docs/ARCHITECTURE.md) and
+[IAM policy review](../docs/IAM_POLICY_REVIEW.md).

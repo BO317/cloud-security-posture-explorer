@@ -10,6 +10,14 @@ BPA_FLAGS = (
     "BlockPublicPolicy", "RestrictPublicBuckets",
 )
 
+ERROR_REASONS = {
+    "access_denied": "AWS access denied; configuration could not be verified.",
+    "api_error": "AWS API error; configuration could not be verified.",
+    "sdk_error": "AWS SDK, credentials, connection, or timeout error; collection unavailable.",
+    "invalid_response": "AWS evidence missing, malformed, partial, or unsupported.",
+    "unexpected_error": "Unexpected collection failure; configuration could not be verified.",
+}
+
 
 @dataclass(frozen=True)
 class Result:
@@ -36,7 +44,9 @@ def check(kind, observation):
     if not isinstance(observation, dict):
         return result("UNKNOWN", "Observation missing or malformed.")
     if observation.get("error") is not None:
-        return result("UNKNOWN", "Collection/API error; configuration could not be verified.")
+        error = observation["error"]
+        reason = ERROR_REASONS.get(error) if isinstance(error, str) else None
+        return result("UNKNOWN", reason or "Collection/API error; configuration could not be verified.")
     if timestamp is None:
         return result("UNKNOWN", "Observation timestamp missing or invalid.")
     data = observation.get("data")
@@ -71,10 +81,16 @@ def check(kind, observation):
             start, end = rule.get("from_port"), rule.get("to_port")
             if type(start) is not int or type(end) is not int or not 0 <= start <= end <= 65535:
                 return result("UNKNOWN", "Port range missing or invalid.")
+        elif protocol in ("icmp", "icmpv6"):
+            start, end = rule.get("from_port"), rule.get("to_port")
+            if (type(start) is not int or type(end) is not int
+                    or not -1 <= start <= 255 or not -1 <= end <= 255
+                    or (start == -1 and end != -1)):
+                return result("UNKNOWN", "ICMP type/code missing or invalid.")
         else:
             start, end = 0, 65535
-        if protocol in ("tcp", "udp", "all") and any(n.prefixlen == 0 for n in networks):
+        if protocol in ("tcp", "all") and any(n.prefixlen == 0 for n in networks):
             flagged.update(port for port in (22, 3389) if start <= port <= end)
     if flagged:
-        return result("REVIEW", "Worldwide inbound source includes management port(s): " + ", ".join(map(str, sorted(flagged))) + "; reachability is not established.")
-    return result("PASS", "No worldwide SSH (22) or RDP (3389) access in the supplied inbound rules; other exposure is not assessed.")
+        return result("REVIEW", "Worldwide inbound source includes TCP management port(s): " + ", ".join(map(str, sorted(flagged))) + "; reachability is not established.")
+    return result("PASS", "No worldwide TCP SSH (22) or RDP (3389) access in the supplied inbound rules; other exposure is not assessed.")
