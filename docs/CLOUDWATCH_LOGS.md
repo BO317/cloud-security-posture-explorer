@@ -1,7 +1,9 @@
 # CloudWatch Logs deployment
 
 Implemented and tested offline. No AWS resources or IAM policies were changed by
-this code update. Keep the existing systemd/journal setup. No CloudWatch Agent or
+this code update. Docker bootstrap preserves the host journal using the journald
+logging driver. See [current deployment instructions](DEPLOYMENT_EC2.md); systemd
+service commands below describe the legacy source deployment. No CloudWatch Agent or
 new Python dependency is required; the application uses its existing boto3 SDK.
 
 ## Destination and events

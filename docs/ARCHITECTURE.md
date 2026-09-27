@@ -1,7 +1,7 @@
 # Architecture and Decision Record
 
 **Status:** AWS provider implemented and tested offline. The operator reports the
-previous MVP is deployed on EC2 with systemd and an instance role. This revision
+previous MVP used systemd; bootstrap now deploys an ECR image on EC2 with Docker and an instance role. This revision
 has not been deployed or live-validated by the implementation task. It remains a
 single-account learning workload, not a full AWS landing zone or official IDR workload.
 
@@ -35,7 +35,7 @@ flowchart TD
     Provider --> Audit[Structured application events]
     Config --> Audit
     Web --> Audit
-    Audit --> Journal[Existing systemd journal]
+    Audit --> Journal[Docker journald driver: host journal]
     Audit --> Queue[Optional bounded background queue]
     Queue --> Logs[CloudWatch Logs: fixed group, instance ID stream]
     Metadata[IMDSv2 identity and refreshable EC2 role] --> Logs
@@ -96,8 +96,9 @@ See [application contract and tests](../app/README.md),
 
 ## Hosting decision
 
-**EC2 selected by the operator:** existing systemd service and instance role are
-retained. The live dashboard defaults to loopback (`HOST` can override the bind address) and requires an authenticated
+**EC2 selected by the operator:** bootstrap installs Docker and runs a published
+ECR image, retaining the instance role. Docker restart policy replaces the old
+application systemd service. See [deployment guide](DEPLOYMENT_EC2.md). The live dashboard defaults to loopback (`HOST` can override the bind address) and requires an authenticated
 access path such as SSH forwarding or a protected local proxy. No built-in login
 is claimed. Compute, storage, public IPv4, and monitoring can incur charges.
 

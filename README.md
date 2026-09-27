@@ -10,7 +10,7 @@ Build an end-to-end story: define a workload, deploy it as code, explain its cus
 
 - Completed before this plan: a standalone Terraform S3 bucket exercise, AWS CLI authentication, and initial exploration of variables, outputs, and state.
 - Implemented: boto3 read-only checks for allowlisted S3 buckets, security groups, and EBS encryption on allowlisted EC2 instances; PASS/REVIEW/UNKNOWN results, independent liveness, and offline automated tests. See [application instructions](app/README.md).
-- Deployment baseline: the operator reports EC2 hosting with systemd and an instance role, without static AWS keys. This provider update still requires deployment and live verification; see [EC2 instructions](docs/DEPLOYMENT_EC2.md).
+- Deployment: Ubuntu EC2 bootstrap now pulls a published Docker image from ECR using the instance role, without static AWS keys or a host application build. Live deployment verification remains required; see [EC2 instructions](docs/DEPLOYMENT_EC2.md).
 - Implemented: optional CloudWatch JSON log delivery alongside journal, using EC2 role authentication and an instance-ID stream. See [logging deployment](docs/CLOUDWATCH_LOGS.md).
 - Not implemented here: built-in authentication, alarms, notifications, runbook validation, and incident exercise. Live inventory must remain behind an authenticated access path.
 - Existing lab bucket is **not** the Terraform state backend or an application data bucket. Do not repurpose or delete it without checking its state and contents.

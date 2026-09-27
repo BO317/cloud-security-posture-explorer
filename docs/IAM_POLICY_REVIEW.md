@@ -94,3 +94,10 @@ or the separate SSM grant. Local systemd journal logging adds no AWS permissions
 Operator SSH/SSM access and deployment tooling permissions are separate from
 the application role and are outside this four-action policy. Do not broaden the
 workload role merely to make operator tasks convenient.
+
+## Docker host ECR pull permissions
+
+The EC2 role also needs ECR authorization and repository-scoped image reads for
+bootstrap. See the exact [actions and repository ARN](DEPLOYMENT_EC2.md#ecr-permissions-on-the-ec2-role).
+No image push or repository administration permission is required. Application
+posture, SSM and CloudWatch permissions remain unchanged.
