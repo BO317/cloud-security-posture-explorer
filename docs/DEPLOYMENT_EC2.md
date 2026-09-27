@@ -28,6 +28,45 @@ below are examples. Preserve the existing working unit/configuration for rollbac
 
 ## Prepare the release
 
+### Bootstrap checkout ownership
+
+The root [bootstrap.sh](../bootstrap.sh) is a corrected copy of the operator's
+cloud-init script from `secure-enterprise-platform-lab/posture-workload`. Replace
+that project's copy when preparing user_data; this repository change does not
+modify the separate infrastructure checkout or an existing EC2 host.
+
+Cloud-init still runs as root, but the script recursively assigns the application
+directory, `.git`, `.venv`, and application files to `ssm-user:ssm-user` and grants
+owner read/write access (directory traversal and existing execute bits retained).
+It ensures the group exists, repairs old ownership before checking an existing
+checkout, and runs Git checks, venv creation, and pip as `ssm-user`. It preserves
+existing revisions and configuration rather than resetting or pulling on reruns.
+Ownership is reapplied after dependency installation. Symlinked checkout roots
+are rejected; recursive chown does not dereference venv interpreter symlinks.
+
+`User=ssm-user` and `ProtectSystem=strict` remain unchanged. The service's filesystem
+view stays read-only; an interactive `ssm-user` shell can update the checkout.
+Bootstrap does not change the identity of an already-open shell. On EC2, verify
+from an `ssm-user` session after bootstrap:
+
+```sh
+whoami
+cd /opt/cloud-security-posture-explorer
+stat -c '%U:%G %n' . .git .venv
+test -w .git && test -w .venv
+git pull --ff-only
+```
+
+Network access and a clean/compatible Git history are still needed for pull.
+The offline bootstrap tests run Bash with host mutations replaced by fakes and
+cover fresh/repeat runs, preservation of existing config, and non-repository
+directory refusal. They do not establish actual Linux UID permissions or a
+successful EC2 deployment:
+
+```sh
+python3 -m unittest app.tests.test_bootstrap -v
+```
+
 First identify your current unit, checkout path, service account, and revision.
 For the example unit name:
 
