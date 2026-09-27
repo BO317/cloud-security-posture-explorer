@@ -1,6 +1,13 @@
 {
   "region": "us-east-1",
-  "allowed_buckets": ["replace-with-your-lab-bucket"],
-  "allowed_security_groups": ["sg-0123456789abcdef0"],
-  "allowed_instance_name_tags": ["cloud-security-posture-explorer"]
+  "allowed_buckets": [
+    "replace-with-your-lab-bucket"
+  ],
+  "allowed_security_groups": [
+    "sg-0123456789abcdef0"
+  ],
+  "allowed_instance_name_tags": [
+    "cloud-security-posture-explorer"
+  ],
+  "cloudwatch_logs_enabled": true
 }

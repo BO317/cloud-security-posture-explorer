@@ -51,6 +51,32 @@ class ParameterConfigurationTest(unittest.TestCase):
     def test_ssm_region_and_invalid_local_scope_do_not_override_valid_parameter(self):
         self.assertEqual(self.load({"SSM_REGION": "us-west-2", "ALLOWED_BUCKETS": "*"}).source, "ssm")
 
+    def test_ec2_needs_no_local_environment_configuration(self):
+        document = {**DOCUMENT, "cloudwatch_logs_enabled": False}
+        self.client.get_parameter.return_value = response(document)
+        with patch("app.config_provider.instance_region", return_value="us-east-1") as metadata, \
+                patch("app.config_provider.apply_cloudwatch_settings") as apply:
+            loaded = self.load({})
+        metadata.assert_called_once_with()
+        self.assertEqual(loaded.settings.region, "us-west-2")
+        self.assertFalse(loaded.settings.cloudwatch_logs_enabled)
+        self.assertEqual(self.session.client.call_args.kwargs["region_name"], "us-east-1")
+        apply.assert_called_once_with(loaded.settings)
+
+    def test_remote_logging_setting_is_strict_and_failed_load_keeps_previous_choice(self):
+        for value in (None, "true", 1, [], {}):
+            self.client.get_parameter.return_value = response({**DOCUMENT, "cloudwatch_logs_enabled": value})
+            with self.subTest(value=value), patch("app.config_provider.apply_cloudwatch_settings") as apply:
+                self.assertEqual(self.load().source, "environment")
+                apply.assert_not_called()
+
+    def test_missing_ssm_and_missing_fallback_are_unknown_without_changing_logging(self):
+        self.client.get_parameter.side_effect = ClientError({"Error": {"Code": "ParameterNotFound"}}, "GetParameter")
+        with patch("app.config_provider.instance_region", return_value="us-east-1"), \
+                patch("app.config_provider.apply_cloudwatch_settings") as apply, self.assertRaises(ConfigurationError):
+            self.load({})
+        apply.assert_not_called()
+
     def test_missing_parameter_access_denied_and_timeout_use_valid_fallback(self):
         errors = [ClientError({"Error": {"Code": code, "Message": "private diagnostic"}}, "GetParameter")
                   for code in ("ParameterNotFound", "AccessDeniedException", "ThrottlingException")]

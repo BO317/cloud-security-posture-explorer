@@ -141,6 +141,26 @@ observations) makes evidence INCOMPLETE.
 - This is not a reachability analysis: routing, NACLs, host firewalls, other ports,
   other broad ranges, and combinations of narrower CIDRs are outside the check.
 
+## CloudWatch Logs
+
+Keep systemd journal logging. Optional CloudWatch delivery copies existing JSON
+`configuration_load`, `posture_observation`, and sanitized `application_error`
+events to `/cloud-security-posture-explorer/app`, stream = hosting instance ID.
+`scan_id` is unchanged across configuration, observations, and scan errors.
+
+Set the optional JSON boolean `cloudwatch_logs_enabled` in the existing SSM
+document (default true). CloudWatch uses its `region`; changes take effect on the
+next scan without a restart. No logging environment variables are needed. EC2
+uses IMDSv2 to discover the initial SSM region, so a local env file is optional.
+Before the first valid SSM load, configuration errors can be sent in the hosting
+region. Later failures retain the process's last successful logging settings.
+
+The background sender uses only refreshable EC2-role credentials and IMDSv2;
+no local credential/profile provider is registered for logging. Delivery is best
+effort with a bounded queue; failure never changes scan results or liveness.
+Raw errors and HTTP access logs are not uploaded. See [setup, permissions,
+limitations, and verification](../docs/CLOUDWATCH_LOGS.md).
+
 ## Tests (no AWS credentials or network access required)
 
 ```sh
@@ -169,6 +189,9 @@ deliberately alongside test execution rather than silently updating deployments.
 
 - `config.py`: shared environment and JSON scope validation.
 - `config_provider.py`: primary SSM load, environment fallback, configuration audit.
+- `ec2_metadata.py`: IMDSv2-only bootstrap region and hosting instance identity.
+- `audit.py`: request-local scan correlation and safe application error JSON.
+- `cloudwatch_logs.py`: bounded asynchronous logging copy, IMDSv2, EC2 role-only client.
 - `aws_support.py`: shared bounded SDK settings and safe audit metadata.
 - `aws_provider.py`: boto3 reads, response normalization, observation audit events.
 - `checks.py`: pure evidence validation and evaluation.
@@ -183,8 +206,9 @@ last attempted API call; `api_requests` preserves operation names and request ID
 for every attempted call, including both EBS collection stages. A failed call
 without an AWS response has a null request ID. They omit resource names, response payloads, and
 exception messages. Retain the deployed configuration/version privately to map
-indexes during an investigation. Logs are local operational evidence, not a
-tamper-proof audit trail; CloudTrail/central logging is not configured here.
+indexes during an investigation. Logs are operational evidence, not a tamper-proof
+audit trail. Optional CloudWatch delivery adds a central copy; journal retention
+and CloudTrail remain separate operator responsibilities.
 
 Live inventory appears on the HTML page. The application has no built-in login:
 use the loopback binding with authenticated SSH access or an already protected

@@ -15,11 +15,13 @@ Use the [JSON example](../app/deploy/parameter-store-config.example.json):
   "region": "us-east-1",
   "allowed_buckets": ["replace-with-your-lab-bucket"],
   "allowed_security_groups": ["sg-0123456789abcdef0"],
-  "allowed_instance_name_tags": ["cloud-security-posture-explorer"]
+  "allowed_instance_name_tags": ["cloud-security-posture-explorer"],
+  "cloudwatch_logs_enabled": true
 }
 ```
 
-All four keys are required; unknown or duplicate keys are rejected. Each allowlist
+The four scope keys are required. Optional `cloudwatch_logs_enabled` is a strict
+JSON boolean (default true). Unknown or duplicate keys are rejected. Each allowlist
 must be an array of strings. Existing region/identifier syntax, whitespace
 trimming, deduplication, and 100-distinct-identifiers-per-list limits apply.
 Individual lists may be empty, but all three empty is invalid. Wildcards, ARNs,
@@ -27,8 +29,9 @@ comma-separated strings inside JSON arrays, nulls, and wrong types are invalid.
 `region` selects the posture API region. No credentials belong in this document.
 SecureString is not supported by this implementation; decryption is disabled.
 
-Keep `/etc/cloud-security-posture.env` and the existing systemd `EnvironmentFile`
-directive. systemd loads the file into the process; Python does not parse it.
+On EC2 no local application configuration file is required. The supplied unit
+uses `EnvironmentFile=-/etc/cloud-security-posture.env`, making fallback optional.
+If retained, systemd loads the file into the process; Python does not parse it.
 
 | Environment variable | Purpose |
 | --- | --- |
@@ -39,8 +42,12 @@ directive. systemd loads the file into the process; Python does not parse it.
 | `ALLOWED_SECURITY_GROUPS` | Existing comma-separated fallback group list |
 | `ALLOWED_INSTANCE_NAME_TAGS` | Comma-separated literal EC2 Name values for fallback |
 
-At least one valid bootstrap region must be supplied locally: the application
-cannot read the remote region before it knows which SSM endpoint to contact.
+With no local region override, IMDSv2 supplies the hosting instance region to
+bootstrap SSM. Store the parameter there. Region overrides above remain supported
+for existing deployments and local workflows; they are not needed on EC2.
+The SSM document region selects posture and CloudWatch endpoints after loading.
+If metadata and local configuration are unavailable, the scan is UNKNOWN/503
+while liveness stays healthy.
 
 The old `allowed_instances` JSON key is rejected, and a nonempty legacy
 `ALLOWED_INSTANCES` invalidates the local fallback. Migrate both sources with
@@ -101,8 +108,10 @@ No configuration-dump endpoint is added.
    [EC2 procedure](DEPLOYMENT_EC2.md).
 3. As the operator, publish the JSON String parameter and grant the exact read
    permission. This code change creates or modifies no AWS resources.
-4. Retain a valid fallback environment, set the bootstrap region, and restart
-   `cloud-security-posture.service` after deployment.
+4. Deploy with the updated optional-EnvironmentFile unit and restart the actual
+   service once for the new code. An existing fallback file may be retained;
+   new EC2 hosts discover the bootstrap region automatically. No server config
+   edits are needed for subsequent SSM changes.
 5. Open the dashboard through authenticated access. Check `journalctl -u
    cloud-security-posture.service` for `source: ssm`, a version, and matching scan
    IDs. Verify intended resources and fresh observations, not just health.

@@ -1,7 +1,8 @@
 # Deploy the read-only provider on EC2
 
-Parameter Store configuration is now primary. Retain the existing EnvironmentFile
-for automatic fallback and a local bootstrap region. Add `ssm:GetParameter` on
+Parameter Store configuration is primary. The updated unit makes EnvironmentFile
+optional: EC2 discovers the bootstrap region through IMDSv2 and requires no local
+app settings. An existing environment file can remain as fallback. Add `ssm:GetParameter` on
 the exact configuration parameter ARN; see [configuration rollout and IAM details](PARAMETER_STORE_MIGRATION.md).
 The existing workload policy example covers posture reads; add this configuration
 read grant separately. No AWS permissions have been modified by this change.
@@ -59,7 +60,7 @@ before stopping the old service and update the unit paths when switching.
 
 ## Configure the bounded resource scope
 
-Copy `app/deploy/posture.env.example` to `/etc/cloud-security-posture.env`, replace
+For an optional legacy/local fallback only, copy `app/deploy/posture.env.example` to `/etc/cloud-security-posture.env`, replace
 the invented identifiers, and restrict permissions (root-owned, mode 0600 is
 sufficient because the system service manager reads EnvironmentFile):
 
@@ -172,6 +173,15 @@ sudo systemctl status cloud-security-posture.service --no-pager
 If creating a new unit rather than editing an existing one, install your adapted
 copy at `/etc/systemd/system/cloud-security-posture.service` with mode 0644 first.
 Do not launch a second service on the existing service's port.
+
+## Optional CloudWatch Logs
+
+Follow [CloudWatch Logs deployment](CLOUDWATCH_LOGS.md) to pre-create the fixed log
+group, grant only stream creation/event writes, and use the SSM
+`cloudwatch_logs_enabled` setting (default true).
+Journal stays enabled. The stream name is the hosting instance ID from IMDSv2,
+independent of the Name-tag scan targets. SSM logging changes apply on the next
+scan without restarting. Local logging variables are not used. Verify cloud delivery separately from liveness/posture.
 
 ## Verify the release
 

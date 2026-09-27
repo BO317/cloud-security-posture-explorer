@@ -13,6 +13,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from app.checks import check
 from app.aws_support import SDK_CONFIG, safe_request_id, utc_now
 from app.config_provider import load_configuration
+from app.audit import SCAN_ID, log_application_error
 
 LOGGER = logging.getLogger(__name__)
 INSTANCE_STATES = ("pending", "running", "stopping", "stopped")
@@ -263,13 +264,13 @@ class AWSProvider:
             try:
                 client.close()
             except Exception:
-                LOGGER.warning("aws_client_cleanup_failed")
+                log_application_error(LOGGER, logging.WARNING, "aws_client_cleanup_failed", scan_id=scan_id)
         return Scan(self.settings.region, scan_id, started, self.clock(), resources)
 
 
 def collect_from_environment():
     """Resolve primary/fallback configuration inside the existing scan boundary."""
-    started, scan_id = utc_now(), str(uuid4())
+    started, scan_id = utc_now(), SCAN_ID.get() or str(uuid4())
     loaded = load_configuration(scan_id=scan_id)
     return AWSProvider(loaded.settings).collect(
         scan_id=scan_id, started_at=started,

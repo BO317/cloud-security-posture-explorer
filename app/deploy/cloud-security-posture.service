@@ -8,7 +8,7 @@ Type=simple
 User=posture
 Group=posture
 WorkingDirectory=/opt/cloud-security-posture-explorer
-EnvironmentFile=/etc/cloud-security-posture.env
+EnvironmentFile=-/etc/cloud-security-posture.env
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=AWS_SHARED_CREDENTIALS_FILE=/dev/null

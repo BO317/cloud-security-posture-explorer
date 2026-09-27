@@ -1,7 +1,7 @@
 # Workload IAM policy review
 
-Parameter Store configuration is now primary. Retain the existing EnvironmentFile
-for automatic fallback and a local bootstrap region. Add `ssm:GetParameter` on
+Parameter Store configuration is primary. Local EnvironmentFile is optional;
+EC2 can discover the bootstrap region through IMDSv2. Add `ssm:GetParameter` on
 the exact configuration parameter ARN; see [configuration rollout and IAM details](PARAMETER_STORE_MIGRATION.md).
 The existing workload policy example covers posture reads; add this configuration
 read grant separately. No AWS permissions have been modified by this change.
@@ -85,7 +85,11 @@ No `s3:ListAllMyBuckets`, object reads/writes, bucket-policy/ACL modification,
 `ec2:Describe*` is needed. No organization discovery or remediation exists.
 Prefix-list and security-group reference resolution is not implemented; such
 evidence becomes UNKNOWN rather than requiring new permissions. There is no
-CloudWatch API integration; local systemd journal logging adds no AWS permissions.
+CloudWatch metric/alarm integration. Optional CloudWatch Logs delivery adds only
+`logs:CreateLogStream` and `logs:PutLogEvents`, scoped to instance-ID streams in
+`/cloud-security-posture-explorer/app`; see [logging IAM details](CLOUDWATCH_LOGS.md#aws-prerequisites-and-permissions).
+The posture policy example intentionally does not include these telemetry writes
+or the separate SSM grant. Local systemd journal logging adds no AWS permissions.
 
 Operator SSH/SSM access and deployment tooling permissions are separate from
 the application role and are outside this four-action policy. Do not broaden the

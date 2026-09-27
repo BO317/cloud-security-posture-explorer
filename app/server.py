@@ -5,15 +5,19 @@ from datetime import datetime, timezone
 from html import escape
 import json
 import logging
+import signal
 from socketserver import ThreadingMixIn
 from threading import Lock
+from uuid import uuid4
 from wsgiref.simple_server import make_server, WSGIServer
 
 from app.checks import check
 from app.aws_provider import collect_from_environment
 from app.config import ConfigurationError
+from app.audit import SCAN_ID, log_application_error
+from app.cloudwatch_logs import configure_cloudwatch
 
-LOGGER = logging.getLogger(__name__)
+LOGGER = logging.getLogger("app.server")  # Also route errors when launched with -m (__main__).
 CHECK_LABELS = {"s3": "S3 bucket-level BPA", "security_group": "Security group inbound",
                 "ebs_encryption": "EBS Volume Encryption"}
 
@@ -70,16 +74,20 @@ def respond(environ, start_response, collector, scan_lock):
             status, body = "503 Service Unavailable", "Posture results UNKNOWN: collection already in progress. Try again after it completes."
             extra_headers = [("Retry-After", "5")]
         else:
+            scan_id = str(uuid4())
+            context_token = SCAN_ID.set(scan_id)
             try:
                 scan = collector()
+                scan_id = scan.scan_id
                 body = dashboard(scan.resources, scan.region, scan.scan_id, scan.started_at, scan.completed_at)
             except ConfigurationError as exc:
                 status, body = "503 Service Unavailable", "Posture results UNKNOWN: " + escape(str(exc))
-                LOGGER.warning("posture_configuration_invalid")
+                log_application_error(LOGGER, logging.WARNING, "posture_configuration_invalid", scan_id=scan_id)
             except Exception:
                 status, body = "503 Service Unavailable", "Posture results UNKNOWN: AWS evaluation unavailable."
-                LOGGER.error("posture_evaluation_failed")
+                log_application_error(LOGGER, logging.ERROR, "posture_evaluation_failed", scan_id=scan_id)
             finally:
+                SCAN_ID.reset(context_token)
                 scan_lock.release()
     else:
         status, body = "404 Not Found", "Not found."
@@ -105,12 +113,26 @@ def main():
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    with make_server("127.0.0.1", args.port, application, server_class=ThreadedWSGIServer) as server:
-        print(f"AWS read-only dashboard: http://127.0.0.1:{server.server_port} (Ctrl+C to stop)", flush=True)
-        try:
+    cloudwatch = configure_cloudwatch()
+
+    def terminate(signum, frame):
+        raise SystemExit(0)
+
+    previous = signal.signal(signal.SIGTERM, terminate)
+    try:
+        with make_server("127.0.0.1", args.port, application, server_class=ThreadedWSGIServer) as server:
+            print(f"AWS read-only dashboard: http://127.0.0.1:{server.server_port} (Ctrl+C to stop)", flush=True)
             server.serve_forever()
-        except KeyboardInterrupt:
-            pass
+    except KeyboardInterrupt:
+        pass
+    except Exception:
+        log_application_error(LOGGER, logging.ERROR, "application_server_failed")
+        raise SystemExit(1) from None
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+        if cloudwatch is not None:
+            logging.getLogger("app").removeHandler(cloudwatch)
+            cloudwatch.close()
 
 
 if __name__ == "__main__":

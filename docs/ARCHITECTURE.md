@@ -15,8 +15,11 @@ flowchart TD
     Web --> Gate[GET /: single collection lock]
     Gate --> Config[Configuration loader]
     Config --> SSM[SSM GetParameter: primary JSON]
-    Env[Local environment: validated fallback] --> Config
+    Env[Optional local environment: validated fallback] --> Config
+    IMDS[IMDSv2 bootstrap region] --> Config
     Config --> Provider[AWS provider]
+    Config --> LogChoice[SSM logging switch and region]
+    LogChoice --> Queue
     Role[EC2 instance role via default credential chain] --> SDK[boto3]
     Provider --> SDK
     SDK --> S3[S3 GetPublicAccessBlock]
@@ -29,14 +32,22 @@ flowchart TD
     Evidence --> Checks[Pure PASS / REVIEW / UNKNOWN checks]
     Checks --> HTML[Server-rendered HTML with reasons and timestamps]
     HTML --> User
-    Provider --> Audit[Safe observation events in systemd journal]
+    Provider --> Audit[Structured application events]
+    Config --> Audit
+    Web --> Audit
+    Audit --> Journal[Existing systemd journal]
+    Audit --> Queue[Optional bounded background queue]
+    Queue --> Logs[CloudWatch Logs: fixed group, instance ID stream]
+    Metadata[IMDSv2 identity and refreshable EC2 role] --> Logs
 ```
 
 Health does not read configuration, initialize boto3 clients, acquire the scan
 lock, or call AWS. The request threads are standard-library `ThreadingMixIn`;
 `wsgiref` and HTML rendering remain. A second simultaneous scan receives 503,
 while liveness can respond during a slow first scan. No background scan or cache
-is used. CloudWatch signals, alarms, and incident exercises remain future work.
+is used. CloudWatch log delivery runs on its own worker when enabled; telemetry
+failure cannot block scans or health. Alarms and incident exercises remain future
+work. See [CloudWatch logging](CLOUDWATCH_LOGS.md).
 
 ## Provider and evidence decisions
 
@@ -114,7 +125,7 @@ remains an alternative, not part of this implementation.
 ## Security boundaries
 
 - Dedicated personal account; no employer resources or data.
-- Application role: read-only permissions required for the two checks; no administrator permissions, mutation APIs, or embedded access keys.
+- Application role: read-only permissions for posture checks plus optional scoped CloudWatch stream/event writes; no administrator permissions, remediation APIs, or embedded access keys.
 - Restrict access to the UI/API; log errors without credentials or sensitive response payloads.
 - Fault exercises only on tagged, disposable lab resources with a documented rollback.
 

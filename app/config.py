@@ -41,19 +41,24 @@ class Settings:
     buckets: tuple[str, ...]
     security_groups: tuple[str, ...]
     instance_name_tags: tuple[str, ...] = ()
+    cloudwatch_logs_enabled: bool = True
 
     @classmethod
     def from_document(cls, document):
         fields = {"region", "allowed_buckets", "allowed_security_groups", "allowed_instance_name_tags"}
-        if not isinstance(document, dict) or set(document) != fields:
-            raise ConfigurationError("Configuration JSON must contain exactly the four supported fields.")
+        optional = {"cloudwatch_logs_enabled"}
+        if not isinstance(document, dict) or not fields <= set(document) or set(document) - fields - optional:
+            raise ConfigurationError("Configuration JSON must contain the required scope fields and supported options only.")
+        logging_enabled = document.get("cloudwatch_logs_enabled", True)
+        if type(logging_enabled) is not bool:
+            raise ConfigurationError("cloudwatch_logs_enabled must be a JSON boolean.")
         region = validate_region(document["region"])
         buckets = _identifiers(document["allowed_buckets"], "allowed_buckets", r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]")
         groups = _identifiers(document["allowed_security_groups"], "allowed_security_groups", r"sg-(?:[0-9a-f]{8}|[0-9a-f]{17})")
         instances = _identifiers(document["allowed_instance_name_tags"], "allowed_instance_name_tags", NAME_TAG_PATTERN)
         if not buckets and not groups and not instances:
             raise ConfigurationError("Empty scope is UNKNOWN; configure at least one explicit resource.")
-        return cls(region, buckets, groups, instances)
+        return cls(region, buckets, groups, instances, logging_enabled)
 
     @classmethod
     def from_environment(cls, environ=None):

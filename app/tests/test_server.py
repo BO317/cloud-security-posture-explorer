@@ -54,7 +54,7 @@ class ServerTest(unittest.TestCase):
             self.assertNotIn("private error", page["body"])
 
     def test_health_does_not_initialize_aws_or_configuration(self):
-        with patch("app.aws_provider.boto3.Session", side_effect=AssertionError("AWS touched")), patch.dict("os.environ", {}, clear=True):
+        with patch("app.aws_provider.boto3.Session", side_effect=AssertionError("AWS touched")), patch.dict("os.environ", {}, clear=True), patch("app.config_provider.instance_region", side_effect=ConfigurationError("Metadata unavailable")):
             response = request(create_application(), "/healthz")
             self.assertEqual(json.loads(response["body"]), {"liveness": "ok"})
             self.assertEqual(request(create_application())["status"], "503 Service Unavailable")

@@ -9,6 +9,9 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from app.aws_support import SDK_CONFIG, safe_request_id, utc_now
 from app.config import ConfigurationError, Settings, validate_region
+from app.audit import log_application_error
+from app.ec2_metadata import instance_region
+from app.cloudwatch_logs import apply_cloudwatch_settings
 
 PARAMETER_NAME = "/cloud-security-posture-explorer/lab/config"
 LOGGER = logging.getLogger(__name__)
@@ -51,19 +54,23 @@ def load_configuration(environ=None, session_factory=None, *, scan_id=None):
     """Never merge sources or retain stale configuration across scans.
 
     systemd loads the local EnvironmentFile; this module reads its process values.
-    AWS_REGION (or SSM_REGION) bootstraps SSM independently of the JSON scan region.
+    EC2 metadata supplies the bootstrap region when no legacy override is present.
     """
     env = dict(os.environ if environ is None else environ)
     client = None
     request_id = None
     reason = None
     try:
-        region = validate_region(env.get("SSM_REGION", env.get("AWS_REGION", env.get("AWS_DEFAULT_REGION", ""))))
+        override = env.get("SSM_REGION", env.get("AWS_REGION", env.get("AWS_DEFAULT_REGION")))
+        region = validate_region(override) if override is not None else instance_region()
         session = (session_factory or boto3.Session)()
         client = session.client("ssm", region_name=region, config=SDK_CONFIG)
         response = client.get_parameter(Name=PARAMETER_NAME, WithDecryption=False)
         request_id = safe_request_id(response)
         loaded = _parse_response(response)
+        # Apply before configuration_load so that this scan's events use the new
+        # remote choice. Failed SSM loads never change the last logging choice.
+        apply_cloudwatch_settings(loaded.settings)
     except ClientError as exc:
         request_id = safe_request_id(exc.response)
         code = exc.response.get("Error", {}).get("Code")
@@ -78,7 +85,7 @@ def load_configuration(environ=None, session_factory=None, *, scan_id=None):
             try:
                 client.close()
             except Exception:
-                LOGGER.warning("ssm_client_cleanup_failed")
+                log_application_error(LOGGER, logging.WARNING, "ssm_client_cleanup_failed", scan_id=scan_id)
     if reason is not None:
         try:
             loaded = LoadedConfiguration(Settings.from_environment(env), "environment")
