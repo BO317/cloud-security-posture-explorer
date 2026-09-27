@@ -63,7 +63,8 @@ reads use the boto3 default credential chain and EC2 role. On Windows use
 `.venv\Scripts\python.exe` and PowerShell `$env:NAME='value'` assignments.
 
 Open http://127.0.0.1:8000/ locally or through authenticated SSH forwarding. The
-server binds to loopback only. `/healthz` returns `{"liveness":"ok"}` independently
+server defaults to loopback; set `HOST=0.0.0.0` inside a container to listen on
+its network interfaces. `/healthz` returns `{"liveness":"ok"}` independently
 of AWS collection. Results contain actual collection/attempt timestamps. Synthetic
 fixtures are test-only and never used as a fallback. Stop with Ctrl+C.
 

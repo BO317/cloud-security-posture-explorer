@@ -22,7 +22,7 @@ below are examples. Preserve the existing working unit/configuration for rollbac
   instance configuration; current boto3 supports role credentials through IMDS.
 - Outbound DNS/HTTPS reaches the required AWS service endpoints, directly or
   through existing network infrastructure. Do not disable certificate verification.
-- Keep port 8000 off public security-group ingress. The app binds only to loopback.
+- Keep port 8000 off public security-group ingress. The app defaults to loopback when HOST is unset.
   Access it through an authenticated SSH tunnel or an existing authenticated and
   authorized reverse proxy. There is no application login or public inventory API.
 

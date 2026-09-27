@@ -8,7 +8,7 @@ from wsgiref.simple_server import make_server
 
 from app.aws_provider import Scan
 from app.config import ConfigurationError
-from app.server import create_application, dashboard, ThreadedWSGIServer
+from app.server import create_application, dashboard, main, application, ThreadedWSGIServer
 from app.sample_data import sample_resources
 
 
@@ -27,6 +27,25 @@ def request(app, path="/", method="GET"):
 
 
 class ServerTest(unittest.TestCase):
+    def test_startup_binding_and_message_follow_host_environment(self):
+        for env, expected_host, bound_host in (
+                ({}, "127.0.0.1", "127.0.0.1"),
+                ({"HOST": "0.0.0.0"}, "0.0.0.0", "0.0.0.0"),
+                ({"HOST": "localhost"}, "localhost", "127.0.0.1")):
+            with self.subTest(env=env), patch.dict("os.environ", env, clear=True), \
+                    patch("sys.argv", ["server", "--port", "8123"]), \
+                    patch("app.server.logging.basicConfig"), \
+                    patch("app.server.configure_cloudwatch", return_value=None), \
+                    patch("app.server.make_server") as factory, patch("builtins.print") as output:
+                server = factory.return_value.__enter__.return_value
+                server.server_address = (bound_host, 8123)
+                server.server_port = 8123
+                server.serve_forever.side_effect = KeyboardInterrupt
+                main()
+                factory.assert_called_once_with(expected_host, 8123, application, server_class=ThreadedWSGIServer)
+                output.assert_called_once_with(
+                    f"AWS read-only dashboard: http://{bound_host}:8123 (Ctrl+C to stop)", flush=True)
+
     def setUp(self):
         self.collector = Mock(return_value=fixture_scan())
         self.app = create_application(self.collector)

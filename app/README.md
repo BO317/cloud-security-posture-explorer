@@ -35,7 +35,8 @@ Stop with Ctrl+C. See [EC2 deployment](../docs/DEPLOYMENT_EC2.md) for systemd.
 | `ALLOWED_BUCKETS` | Comma-separated bucket names; no wildcards, ARNs, or empty entries |
 | `ALLOWED_SECURITY_GROUPS` | Comma-separated security group IDs; no discovery or filters from the browser |
 | `ALLOWED_INSTANCE_NAME_TAGS` | Optional comma-separated literal EC2 Name tag values for attached EBS volume encryption checks; empty disables this check |
-| `--port` | HTTP port, default 8000; host remains fixed at `127.0.0.1` |
+| `HOST` | Bind address, default `127.0.0.1` when unset; use `0.0.0.0` inside a container |
+| `--port` | HTTP port, default 8000 |
 
 Allowlist entries are trimmed and deduplicated, with a maximum of 100 per list.
 Any list may be empty to skip those targets. All three empty, an absent region, or
@@ -60,6 +61,23 @@ application scope selectors, not an IAM authorization boundary.
 `allowed_instances` and nonempty `ALLOWED_INSTANCES` are no longer accepted.
 Migrate both primary and fallback configuration with the code release; see the
 [deployment migration steps](../docs/DEPLOYMENT_EC2.md#name-tag-migration).
+
+## Server binding
+
+Local and EC2 execution retain `127.0.0.1:8000` when HOST is unset.
+For a container, set `HOST=0.0.0.0` in its runtime environment. For example,
+with an existing image:
+
+```sh
+docker run --rm -e HOST=0.0.0.0 -p 127.0.0.1:8000:8000 your-app-image
+```
+
+The container listens on all IPv4 interfaces; this example publishes the port
+only on the Docker host's loopback interface. Retain authenticated access for
+live inventory. Startup output reports the actual bound address and port.
+HOST is a process-start setting, not a Parameter Store field; restart/recreate
+the process to change it. Port selection still uses `--port`. AWS credentials,
+metadata access, and logging requirements are unchanged by this binding change.
 
 ## Endpoints and collection lifecycle
 

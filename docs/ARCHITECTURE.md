@@ -10,7 +10,7 @@ single-account learning workload, not a full AWS landing zone or official IDR wo
 ```mermaid
 flowchart TD
     User[Authorized lab operator] --> Access[SSH tunnel or protected local proxy]
-    Access --> Web[Loopback wsgiref server with request threads]
+    Access --> Web[wsgiref server with request threads; loopback default]
     Web --> Health[GET /healthz: liveness only]
     Web --> Gate[GET /: single collection lock]
     Gate --> Config[Configuration loader]
@@ -97,7 +97,7 @@ See [application contract and tests](../app/README.md),
 ## Hosting decision
 
 **EC2 selected by the operator:** existing systemd service and instance role are
-retained. The live dashboard stays bound to loopback and requires an authenticated
+retained. The live dashboard defaults to loopback (`HOST` can override the bind address) and requires an authenticated
 access path such as SSH forwarding or a protected local proxy. No built-in login
 is claimed. Compute, storage, public IPv4, and monitoring can incur charges.
 
