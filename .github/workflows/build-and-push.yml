@@ -49,3 +49,18 @@ jobs:
         run: |
           echo "Image pushed:"
           echo "${{ github.sha }}"
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Dump GitHub Context
+        run: |
+          echo "Repository=${{ github.repository }}"
+          echo "Ref=${{ github.ref }}"
+          echo "Actor=${{ github.actor }}"
