@@ -30,6 +30,26 @@ unchanged. This deployment is tested offline, not live-validated on EC2.
 
 ## Image selection and bootstrap
 
+### CI publication gate
+
+The `Build and Push to ECR` workflow runs on pushes to `feature/docker`.
+Its `test` job uses Python 3.12 (matching the Dockerfile), installs
+`app/requirements-lock.txt`, checks `bash -n bootstrap.sh`, and runs
+`python -m unittest discover -s app/tests -v`, including the offline bootstrap tests.
+The `build-and-push` job declares `needs: test`: a failed or skipped test job
+prevents image building and publication. No failure bypass is configured.
+Only the publication job has `id-token: write` for the existing AWS role;
+the test job has read-only repository access and requires no AWS credentials.
+
+Published image tags remain the full commit SHA. This workflow does not deploy
+to EC2 automatically. PR triggers and required branch checks are not configured
+by this change; this gate controls image publication, not merging into `main`.
+After pushing the workflow, verify that `test` succeeds before `build-and-push`
+starts in GitHub Actions. GitHub documents the dependency behavior in
+[Using jobs in a workflow](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-jobs).
+
+### Deploy a published image
+
 Paste the complete root [bootstrap.sh](../bootstrap.sh) into EC2 shell user data,
 including its `#!/bin/bash` line. Its only default image tag is:
 
