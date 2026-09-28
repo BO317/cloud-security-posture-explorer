@@ -6,7 +6,9 @@
 
 - Exercise ID: `[LAB-YYYYMMDD-01]`
 - Date/time zone: `[ ]`
-- Workload version/commit: `[ ]`
+- Workload commit and deployed image tag/digest: `[ ]`
+- Workflow run URL, SSM CommandId and deployment-document version: `[ ]`
+- SSM configuration version/source and representative scan ID: `[ ]`
 - Region/account alias (no full account ID in public copy): `[ ]`
 - Scenario and expected impact: `[ ]`
 - Fault method and dedicated target: `[ ]`
@@ -17,8 +19,10 @@
 
 - [ ] Budget/credit balance checked.
 - [ ] Target is owned, disposable, and clearly tagged.
-- [ ] Baseline user journey passes.
-- [ ] Alarm and notification path have been tested.
+- [ ] Baseline liveness and fresh posture observations verified separately.
+- [ ] Known-good image tag/digest and recovery procedure recorded.
+- [ ] For an alerting exercise, alarm and notification path tested; otherwise
+      explicitly record manual detection and do not claim alarm validation.
 - [ ] Rollback is ready; no employer or third-party resources are involved.
 
 ## Timeline (use actual timestamps)

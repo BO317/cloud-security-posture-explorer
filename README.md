@@ -15,12 +15,12 @@ Build an end-to-end story: define a workload, deploy it as code, explain its cus
 - Not implemented here: built-in authentication, alarms, notifications, runbook validation, and incident exercise. Live inventory must remain behind an authenticated access path.
 - Existing lab bucket is **not** the Terraform state backend or an application data bucket. Do not repurpose or delete it without checking its state and contents.
 
-## Proposed MVP
+## Current application and remaining lab work
 
 - A read-only web view of selected resources in a personal AWS lab account.
-- Initial checks: S3 bucket-level Block Public Access configuration and security group inbound rules. Results must distinguish `PASS`, `REVIEW`, and `UNKNOWN`; an API error or missing visibility is never a `PASS`.
+- Implemented checks: S3 bucket-level Block Public Access, inbound TCP 22/3389 rules, and attached EBS encryption for EC2 Name targets. Results must distinguish `PASS`, `REVIEW`, and `UNKNOWN`; an API error or missing visibility is never a `PASS`.
 - A documented application health check and a separate infrastructure health signal.
-- An alert route, a human-run response plan, and one controlled, reversible failure exercise.
+- Planned: an alert route and a measured incident exercise. A draft runbook and exercise template are available; they do not establish tested alerting.
 - No real customer data, company information, public write API, or automatic remediation.
 
 ## Repository layout
@@ -31,6 +31,8 @@ app/                      # AWS provider, checks, WSGI server, tests, deployment
 docs/
   PROJECT_PLAN.md
   ARCHITECTURE.md
+  PARAMETER_STORE_MIGRATION.md
+  CLOUDWATCH_LOGS.md
   DEPLOYMENT_EC2.md
   IAM_POLICY_REVIEW.md
   SECURITY_AND_COST.md
@@ -38,11 +40,16 @@ docs/
   EXERCISE_RECORD_TEMPLATE.md
 ```
 
-The earlier Terraform exercise is separate and is not included in this checkout.
+Dockerfile and bootstrap.sh define image packaging and EC2 container bootstrap.
+`.github/workflows/build-and-push.yml` defines tests, ECR publication and SSM
+deployment. The Terraform infrastructure and custom SSM deployment document are
+not included in this checkout.
 
 ## Run and test
 
-Requires Python 3.10 or newer and boto3. From the repository root on Linux/EC2:
+Local source development requires Python 3.10+ and boto3; CI and the Docker image
+use Python 3.12. These venv commands are for a development checkout, not the EC2
+container host. From the repository root on Linux:
 
 ```sh
 python3 -m venv .venv
@@ -74,6 +81,33 @@ for the JSON schema and exact `ssm:GetParameter` permission. EC2 automatically
 discovers the SSM region through IMDSv2 when no override is configured; the local
 environment file is optional. CloudWatch settings also live in SSM and refresh
 on the next scan without a restart.
+
+## Delivery pipeline
+
+```text
+push feature/docker -> test -> build-and-push -> deploy-check (lab environment)
+```
+
+CI runs the offline suite and Bash syntax check before publishing an image tagged
+with the commit SHA. The SSM deployment job uses a separate OIDC role, passes that
+SHA to `CloudSecurityPostureExplorerDeploy`, and polls its result. Required approval
+depends on GitHub environment settings, not merely the `lab` name in YAML.
+The workflow currently uses a fixed deployment instance ID. See the
+[deployment contract and external prerequisites](docs/DEPLOYMENT_EC2.md#ssm-deployment-job).
+
+Bootstrap defaults to image tag `1.1`; CI does not publish that tag. Select the
+published SHA explicitly for a new release or rollback. EBS Name-based targeting
+does not automatically update the CD target after EC2 replacement.
+
+## Documentation map
+
+- [Application contract](app/README.md): endpoints, checks, UNKNOWN and local tests.
+- [Deployment guide](docs/DEPLOYMENT_EC2.md): CI/CD, bootstrap, image selection and recovery.
+- [Configuration](docs/PARAMETER_STORE_MIGRATION.md): SSM schema and fallback.
+- [CloudWatch Logs](docs/CLOUDWATCH_LOGS.md): destination, permissions and diagnosis.
+- [Architecture](docs/ARCHITECTURE.md) and [IAM boundaries](docs/IAM_POLICY_REVIEW.md).
+- [Project status](docs/PROJECT_PLAN.md), [runbook](docs/INCIDENT_RUNBOOK.md),
+  [exercise record](docs/EXERCISE_RECORD_TEMPLATE.md), and [guardrails](docs/SECURITY_AND_COST.md).
 
 ## Before any deployment
 

@@ -4,9 +4,10 @@ Read-only AWS collection with boto3, Python 3.10+, standard-library `wsgiref`,
 server-rendered HTML, and `unittest`. No JavaScript framework or remediation.
 The application remains a portfolio workload, not a production security product.
 
-## Install, configure, and run
+## Local development: install, configure, and run
 
-From the repository root, using Linux/EC2:
+These source/venv commands are for a development checkout, not the current EC2
+container host. From the repository root on Linux:
 
 ```sh
 python3 -m venv .venv
@@ -22,11 +23,13 @@ Replace example resource identifiers. On Windows use `.venv\Scripts\python.exe`
 and PowerShell environment assignments such as `$env:AWS_REGION='us-east-1'`.
 Use the EC2 instance role for live collection. No static keys are needed or
 accepted as application arguments. The SDK uses its default credential chain;
-the deployment unit isolates the service from local profiles and static-key
-environment variables so that EC2 role credentials are selected.
+Docker bootstrap forwards only supported configuration variables and disables
+shared credential/config files. Keep credentials out of the image. Local execution
+still uses the default SDK chain; it does not enforce EC2-only identity for posture reads.
 
 Open http://127.0.0.1:8000/ locally, or through authenticated SSH forwarding.
-Stop with Ctrl+C. See [EC2 deployment](../docs/DEPLOYMENT_EC2.md) for systemd.
+Stop with Ctrl+C. See [EC2 deployment](../docs/DEPLOYMENT_EC2.md) for Docker/ECR
+bootstrap and the GitHub Actions to SSM deployment flow.
 
 | Setting | Meaning |
 | --- | --- |
@@ -46,8 +49,9 @@ performs no posture reads. Parameter Store is primary at
 `allowed_buckets`, `allowed_security_groups`, and `allowed_instance_name_tags`. The complete
 environment is the fallback on SSM/JSON/validation failure, without merging fields.
 See [configuration and rollout](../docs/PARAMETER_STORE_MIGRATION.md) and the
-[JSON example](deploy/parameter-store-config.example.json). Restart systemd after
-editing its environment file; remote changes apply on the next scan. SDK timeouts are fixed at 3 seconds connect,
+[JSON example](deploy/parameter-store-config.example.json). Recreate the container
+through bootstrap after editing the host fallback file; `docker restart` alone
+does not reload it. Remote changes apply on the next scan. SDK timeouts are fixed at 3 seconds connect,
 5 seconds read, and two total attempts in standard retry mode. Credential metadata
 timeouts are separate (see deployment example). These are not a whole-scan deadline.
 
@@ -64,7 +68,8 @@ Migrate both primary and fallback configuration with the code release; see the
 
 ## Server binding
 
-Local and EC2 execution retain `127.0.0.1:8000` when HOST is unset.
+Direct Python execution retains `127.0.0.1:8000` when HOST is unset. EC2 bootstrap
+explicitly sets HOST and publishes port 8000 on all host interfaces.
 For a container, set `HOST=0.0.0.0` in its runtime environment. For example,
 with an existing image:
 
@@ -161,7 +166,7 @@ observations) makes evidence INCOMPLETE.
 
 ## CloudWatch Logs
 
-Keep systemd journal logging. Optional CloudWatch delivery copies existing JSON
+Docker bootstrap uses the journald driver for host logging. Optional CloudWatch delivery copies existing JSON
 `configuration_load`, `posture_observation`, and sanitized `application_error`
 events to `/cloud-security-posture-explorer/app`, stream = hosting instance ID.
 `scan_id` is unchanged across configuration, observations, and scan errors.
@@ -179,7 +184,7 @@ effort with a bounded queue; failure never changes scan results or liveness.
 Raw errors and HTTP access logs are not uploaded. See [setup, permissions,
 limitations, and verification](../docs/CLOUDWATCH_LOGS.md).
 
-## Tests (no AWS credentials or network access required)
+## Tests (no AWS credentials or external network access required)
 
 ```sh
 .venv/bin/python -m unittest discover -s app/tests -v
@@ -198,7 +203,10 @@ unsigned test clients; no test keys are created. Cases include API success,
 AccessDenied, credential/timeout/connection failures, malformed/partial data,
 empty results, scope isolation, protocol aliases, encrypted/unencrypted EBS volumes,
 incomplete volume attachments, mixed good/bad rules, and audit
-redaction. A real loopback HTTP test verifies health during a blocked collection.
+redaction. A real loopback HTTP test verifies health during a blocked collection. Bootstrap
+workflow tests require Bash (Git Bash on Windows); without it they are skipped.
+CI uses an Ubuntu runner with Bash and Python 3.12, runs the full suite and shell
+syntax check, and gates image publication with `needs: test`.
 Synthetic fixtures remain only as test inputs; the running server never imports
 or falls back to them. The dependency lock records the tested versions; update it
 deliberately alongside test execution rather than silently updating deployments.
@@ -215,7 +223,10 @@ deliberately alongside test execution rather than silently updating deployments.
 - `checks.py`: pure evidence validation and evaluation.
 - `server.py`: HTML, routes, threaded wsgiref listener and scan lock.
 - `tests/`: offline unit/SDK-stub tests and loopback HTTP integration test.
-- `deploy/`: illustrative environment, systemd unit, and role permissions policy.
+- `deploy/`: SSM JSON, fallback environment and posture-only policy examples;
+  the systemd unit is a legacy source-deployment reference, not used by bootstrap.
+- `../bootstrap.sh`: Docker/ECR EC2 provisioning and liveness validation.
+- `../.github/workflows/build-and-push.yml`: test, image publication, then SSM deployment.
 
 Observation logs contain scan ID, zero-based target index (buckets first, then
 groups, then instance Name targets, in allowlist order), kind, timestamp, status, safe

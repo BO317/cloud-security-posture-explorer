@@ -38,15 +38,62 @@ Its `test` job uses Python 3.12 (matching the Dockerfile), installs
 `python -m unittest discover -s app/tests -v`, including the offline bootstrap tests.
 The `build-and-push` job declares `needs: test`: a failed or skipped test job
 prevents image building and publication. No failure bypass is configured.
-Only the publication job has `id-token: write` for the existing AWS role;
-the test job has read-only repository access and requires no AWS credentials.
+The publication and deployment jobs each have `id-token: write` and assume
+separate AWS roles. The test job has read-only repository access and requires
+no AWS credentials.
 
-Published image tags remain the full commit SHA. This workflow does not deploy
-to EC2 automatically. PR triggers and required branch checks are not configured
-by this change; this gate controls image publication, not merging into `main`.
+Published image tags are the full commit SHA. After publication, `deploy-check`
+requests deployment through SSM as described below. There is no PR trigger in
+this workflow; GitHub branch protection settings are external to this repository
+and have not been inspected by this documentation review.
 After pushing the workflow, verify that `test` succeeds before `build-and-push`
 starts in GitHub Actions. GitHub documents the dependency behavior in
 [Using jobs in a workflow](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-jobs).
+
+### SSM deployment job
+
+The current job chain in [the workflow](../.github/workflows/build-and-push.yml) is:
+
+```text
+push to feature/docker -> test -> build-and-push -> deploy-check
+                                                   (environment: lab)
+```
+
+`build-and-push` assumes `GitHubActionsECRPushRole`; `deploy-check` assumes
+`GitHubActionsPostureDeployRole`. Both use OIDC, not stored AWS keys.
+The deployment job targets the literal `INSTANCE_ID` in the workflow, in
+`us-east-1`, and invokes the custom SSM document
+`CloudSecurityPostureExplorerDeploy` with `ImageTag` set to the commit SHA.
+It polls the `deployImage` plugin up to 200 times with five-second sleeps,
+accepting only `Success` with response code zero. Job timeout is 25 minutes.
+Deployment jobs share concurrency group `posture-lab-deployment` with
+`cancel-in-progress: false`; this is not a guaranteed FIFO deployment queue.
+
+The job references GitHub environment `lab`. Required reviewers and deployment
+branch restrictions must be configured in GitHub Settings; `environment: lab`
+alone does not prove that approval is enforced. Verify these external settings
+before describing deployment as approval-gated. See
+[GitHub deployment review](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/review-deployments).
+
+The SSM document body, IAM role policies/trust, environment protection settings,
+and SSM Agent configuration are **not versioned in this repository**. Review the
+actual document's default version and confirm that `ImageTag` validation, image
+replacement, liveness check, environment forwarding, and journal configuration
+match the intended behavior. The workflow does not pin `--document-version` or
+independently curl the app: SSM plugin success alone does not prove the right
+image is serving, that `/healthz` was checked, or that AWS posture scans succeed.
+A polling/job timeout also does not establish that the remote command stopped;
+inspect the original CommandId before retrying or rolling back.
+
+The SSM managed instance must be online, the deployment role must be allowed to
+send this document to that instance and read invocation results, and the instance
+role must support SSM Agent operation plus ECR/app access. These are prerequisites,
+not resources created by this repository.
+
+**Instance replacement:** Name tags make EBS check targets resilient to changing
+instance IDs, but CD still uses a fixed `INSTANCE_ID`. Update that workflow value
+and any scoped deployment permissions after replacing the hosting instance.
+Bucket names and security group IDs in SSM must also be kept current.
 
 ### Deploy a published image
 
@@ -62,11 +109,16 @@ For an existing host, copy the script to a local file and execute:
 ```bash
 sudo bash bootstrap.sh
 # Deploy a different published version, or roll back to a known-good version:
-sudo env IMAGE_TAG=1.2 bash bootstrap.sh
+sudo env IMAGE_TAG='<published-full-commit-sha>' bash bootstrap.sh
 ```
 
 Changing EC2 user data alone does not rerun bootstrap on an existing instance.
-No Git pull on the EC2 host is needed. Build and publish images separately.
+No Git pull on the EC2 host is needed. CI publishes SHA tags, not `1.1` or `1.2`.
+The bootstrap default `1.1` only works if that tag already exists; use the exact
+published SHA for a reviewed release. Repeating bootstrap without IMAGE_TAG can
+replace a newer release with the default image. For new user data, set IMAGE_TAG
+near the top to the desired published tag. For manual rollback, use the recorded
+known-good tag with the same command above and independently verify the dashboard.
 
 Bootstrap installs `docker.io`, `curl`, `jq`, `sudo`, `unzip`, and CA certificates
 from the Ubuntu archive. It does not depend on the Ubuntu `awscli` package.
@@ -186,3 +238,30 @@ ARM64 package when absent, skipping installation on rerun, and failing safely on
 download, extraction or installer errors.
 They do not establish actual Linux permissions, image compatibility, live ECR/IAM
 access or EC2 networking; verify these on the deployed lab instance.
+
+## Name tag migration
+
+For deployments that still use instance-ID configuration:
+
+1. Give each intended EBS-check target a unique literal EC2 Name value in the
+   configured region among pending/running/stopping/stopped instances.
+2. Replace `allowed_instances` in the SSM JSON with `allowed_instance_name_tags`;
+   remove the old key. Preserve all other required fields.
+3. If a fallback file exists, replace nonempty `ALLOWED_INSTANCES` with
+   `ALLOWED_INSTANCE_NAME_TAGS`. Recreate the container through bootstrap to load it.
+4. Deploy a compatible image and verify Name resolution and volume observations.
+   No match, multiple matches or incomplete data must produce UNKNOWN.
+
+This migration affects posture targeting only; it does not change the CD target
+`INSTANCE_ID` discussed above. No new tag-read action is required beyond the
+existing DescribeInstances call.
+
+## Legacy deployment examples
+
+`app/deploy/cloud-security-posture.service` is a historical source/venv example
+with `User=posture`. Current bootstrap does not install it and runs no application
+systemd unit. The host account `ssm-user` is for Session Manager administration;
+it is not the container's Linux user. The current Dockerfile has no USER directive
+and therefore runs as container root. Docker restart policy manages the app,
+while systemd manages the Docker daemon. Do not re-enable the old app service
+alongside the container on port 8000.
