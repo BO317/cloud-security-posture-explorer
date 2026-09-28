@@ -73,3 +73,22 @@ jobs:
         run: |
           echo "Image pushed:"
           echo "${{ github.sha }}"
+
+  deploy-check:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    environment: lab
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Configure deployment credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::980468996827:role/GitHubActionsPostureDeployRole
+          aws-region: us-east-1
+
+      - name: Verify deployment identity
+        run: aws sts get-caller-identity
