@@ -78,10 +78,21 @@ jobs:
     needs: build-and-push
     runs-on: ubuntu-latest
     environment: lab
+    timeout-minutes: 25
+
+    concurrency:
+      group: posture-lab-deployment
+      cancel-in-progress: false
 
     permissions:
       id-token: write
       contents: read
+
+    env:
+      AWS_REGION: us-east-1
+      INSTANCE_ID: i-05ec2e36ea46a248e
+      DOCUMENT_NAME: CloudSecurityPostureExplorerDeploy
+      AWS_PAGER: ""
 
     steps:
       - name: Configure deployment credentials
@@ -90,5 +101,58 @@ jobs:
           role-to-assume: arn:aws:iam::980468996827:role/GitHubActionsPostureDeployRole
           aws-region: us-east-1
 
-      - name: Verify deployment identity
-        run: aws sts get-caller-identity
+      - name: Deploy image and check result
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Deploying commit: $GITHUB_SHA"
+          parameters=$(jq -nc --arg tag "$GITHUB_SHA" '{ImageTag: [$tag]}')
+
+          command_id=$(aws ssm send-command \
+            --region "$AWS_REGION" \
+            --document-name "$DOCUMENT_NAME" \
+            --instance-ids "$INSTANCE_ID" \
+            --parameters "$parameters" \
+            --comment "Deploy posture image $GITHUB_SHA" \
+            --query 'Command.CommandId' \
+            --output text)
+
+          echo "SSM CommandId: $command_id"
+
+          for attempt in {1..200}; do
+            if ! aws ssm get-command-invocation \
+              --region "$AWS_REGION" \
+              --command-id "$command_id" \
+              --instance-id "$INSTANCE_ID" \
+              --plugin-name deployImage \
+              --output json > invocation.json 2> invocation.err; then
+              if grep -q 'InvocationDoesNotExist' invocation.err; then
+                sleep 5
+                continue
+              fi
+              cat invocation.err >&2
+              exit 1
+            fi
+
+            status=$(jq -r '.Status' invocation.json)
+            echo "Deployment status: $status"
+
+            case "$status" in
+              Success)
+                jq -r '.StandardOutputContent, .StandardErrorContent' invocation.json
+                test "$(jq -r '.ResponseCode' invocation.json)" = "0"
+                echo "Deployment succeeded: $GITHUB_SHA"
+                exit 0
+                ;;
+              Failed|Cancelled|TimedOut)
+                jq -r '.StandardOutputContent, .StandardErrorContent' invocation.json
+                exit 1
+                ;;
+            esac
+
+            sleep 5
+          done
+
+          echo "Deployment result was not confirmed before the polling limit." >&2
+          exit 1
