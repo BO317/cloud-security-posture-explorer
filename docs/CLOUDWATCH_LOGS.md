@@ -1,7 +1,8 @@
 # CloudWatch Logs deployment
 
 Implemented and tested offline. No AWS resources or IAM policies were changed by
-this code update. Keep the existing systemd/journal setup. No CloudWatch Agent or
+this code update. Docker bootstrap preserves the host journal using the journald
+logging driver. See [current deployment instructions](DEPLOYMENT_EC2.md). No CloudWatch Agent or
 new Python dependency is required; the application uses its existing boto3 SDK.
 
 ## Destination and events
@@ -18,11 +19,11 @@ new Python dependency is required; the application uses its existing boto3 SDK.
   startup errors outside a scan have null `scan_id`. No raw exception or traceback
   is uploaded. HTTP access lines and startup console text remain journal-only.
 
-The root stderr handler is retained for systemd journal. CloudWatch attaches a
+The root stderr handler is retained; Docker forwards it to the host journal. CloudWatch attaches a
 second handler only to application loggers. Its own delivery diagnostics use a
-separate journal-only logger, preventing recursive uploads. The service name can
-be `cloud-security-posture-explorer` (bootstrap deployment) or the earlier
-`cloud-security-posture` example: use your actual installed service name.
+separate local logger, preventing recursive uploads. The container name is
+`cloud-security-posture-explorer`; inspect it with `docker logs` or the
+`CONTAINER_NAME` journal filter, not `journalctl -u` for an obsolete app unit.
 
 ## Configuration
 
@@ -47,8 +48,8 @@ finish sending after logging is disabled. The journal always retains the events.
 On EC2 with no environment file, IMDSv2 `placement/region` provides the initial
 SSM region. Put the parameter in that region. The optional legacy `SSM_REGION`,
 `AWS_REGION`, or `AWS_DEFAULT_REGION` override is still supported for local
-workflows or a parameter in a different region. The supplied systemd unit makes
-the environment file optional; no per-instance app settings need to be written.
+workflows or a parameter in a different region. Docker bootstrap makes the
+environment file optional; no per-instance app settings need to be written.
 
 If SSM fails or returns invalid JSON, retain the last successful logging switch
 and region for this process only. This is not a cached posture scope: normal
@@ -63,7 +64,8 @@ CloudWatch authentication has an explicit **EC2 role-only** credential resolver.
 It uses botocore's refreshable instance metadata provider; environment credentials,
 profiles, SSO, web identity, and container credential providers are not registered
 for this client. No AWS access keys are accepted as logging configuration.
-Retain the systemd unit's credential isolation for the other application clients.
+Retain bootstrap's restricted environment forwarding and credential-file isolation
+for the other application clients; do not bake credentials into the image.
 The new resolver uses botocore interfaces tested with `requirements-lock.txt`;
 rerun the suite before changing the dependency lock.
 
@@ -90,7 +92,8 @@ rerun the suite before changing the dependency lock.
 3. Enable IMDSv2 access on the instance. Identity retrieval uses fixed link-local
    URLs, a two-second timeout, no proxy/redirect, and no IMDSv1 fallback. Role
    credentials also use IMDSv2 with bounded metadata attempts. Keep
-   `AWS_EC2_METADATA_DISABLED=false` in the service environment.
+   `AWS_EC2_METADATA_DISABLED=false` in the container environment (bootstrap sets it).
+   Set the EC2 IMDSv2 response hop limit to 2 for Docker bridge networking.
 4. Allow outbound HTTPS/DNS to the regional CloudWatch Logs endpoint using existing
    routing or an appropriate endpoint. Keep metadata access local. Do not expose
    the dashboard publicly or add inbound access for logging.
@@ -101,17 +104,16 @@ resource remediation, tagging, policy modification, or AWS provisioning is added
 
 ## Deploy and verify
 
-Deploy the reviewed application code and run:
+Deploy the reviewed image using the [deployment guide](DEPLOYMENT_EC2.md), then run:
 
 ```sh
-cd /opt/cloud-security-posture-explorer
-.venv/bin/python -m unittest discover -s app/tests -v
-sudo systemctl restart cloud-security-posture-explorer
+docker ps --filter name=cloud-security-posture-explorer
 curl --fail http://127.0.0.1:8000/healthz
-sudo journalctl -u cloud-security-posture-explorer -n 100 --no-pager
+docker logs --tail 100 cloud-security-posture-explorer
+sudo journalctl CONTAINER_NAME=cloud-security-posture-explorer -n 100 --no-pager
 ```
 
-The one-time restart above loads the new code. Subsequent SSM edits do not need
+Container replacement loads new code. Subsequent SSM edits do not need
 a restart. After setting up AWS prerequisites and enabling logging in SSM, open the dashboard
 through the existing authenticated access path. In the CloudWatch console select
 the logging region, the fixed log group, and the hosting instance's ID stream.
@@ -120,10 +122,8 @@ the dashboard and journal. Configuration/server failures generate
 `application_error`; verify failure paths offline rather than breaking a live
 deployment. Health 200 does not prove logging delivery or scan success.
 
-Use the updated unit (or cloud-init bootstrap) with
-`EnvironmentFile=-/etc/cloud-security-posture.env`: the minus sign makes the local
-fallback optional. Existing deployments that retain the file can keep running
-without changing it. To disable the integration, set `cloudwatch_logs_enabled`
+Bootstrap preserves `/etc/cloud-security-posture.env` if present; SSM-only hosts
+do not need it. Recreate the container if you change this fallback file. To disable the integration, set `cloudwatch_logs_enabled`
 to false in SSM and request a fresh scan. No SSH or local env edit is needed.
 
 ## Delivery limits and diagnosis

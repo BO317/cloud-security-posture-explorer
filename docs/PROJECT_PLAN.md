@@ -1,92 +1,71 @@
-# Project Plan
+# Project Plan and Delivery Status
 
-## Project statement
+This personal portfolio lab combines read-only AWS posture checks with deployment,
+logging and incident-response practice. It is not a production security product,
+a full landing zone, or an official AWS Incident Detection and Response workload.
+Status below describes repository implementation, not proof of live AWS operation.
 
-Create a small, read-only AWS security posture application and use it as a **simulated customer workload** for monitoring, incident coordination, recovery, and retrospective practice. Use Terraform for lab infrastructure and Git for change history. The objective is demonstrable engineering and incident-management judgment, not a production landing zone.
+## Current implementation
 
-## Audience and outcomes
+| Area | Implemented in this repository | Remaining evidence/work |
+| --- | --- | --- |
+| Posture app | S3 bucket BPA, TCP 22/3389 ingress, attached EBS encryption; conservative UNKNOWN | Verify intended live targets and timestamps |
+| Web interface | Server-rendered HTML, threaded wsgiref, independent `/healthz` | Validate protected access; no built-in authentication |
+| Configuration | Primary SSM JSON, whole-environment fallback, Name tag targeting | Verify actual parameter and IAM grants |
+| EC2 hosting | Ubuntu Docker/ECR bootstrap, role credentials, journal logs | Verify image, IMDSv2 hop limit, host/network permissions |
+| Logging | Correlated JSON and optional CloudWatch copies | Verify group, retention, role grants and delivery |
+| CI | Python 3.12 tests and Bash syntax gate before SHA-tagged ECR publication | Retain successful workflow evidence |
+| CD | SSM deployment job using `lab` environment and a separate OIDC role | Verify required reviewers, custom SSM document and fixed instance target |
+| Incident response | Runbook and exercise-record template | Run a controlled exercise and record measured evidence |
+| Alarms/notifications | Not implemented in this repository | Design, configure and test before claiming automatic detection |
+| Infrastructure | Terraform is outside this checkout | Review infrastructure and state in its owning repository |
 
-- **Lab user:** can inspect a limited set of security checks in the personal AWS account.
-- **Lab operator:** can determine whether the application is healthy, see why an alarm fired, follow a runbook, record decisions and status updates, and verify recovery.
-- **Portfolio reviewer:** can reproduce the design rationale and inspect Terraform, tests, a controlled exercise, and honest limitations without receiving credentials.
+The historical synthetic MVP is complete; fixtures are now test-only. The running
+app uses AWS reads and never substitutes fixtures for failed collection. EC2 is
+the selected host. Lambda remains an optional future comparison.
 
-## Scope
+## Acceptance milestones
 
-### MVP in scope
+### 1. Guardrails and access
 
-1. Read-only inspection of selected S3 bucket-level public access block settings and selected security group ingress rules; clear check rationale and `UNKNOWN` on incomplete evidence.
-2. Simple UI and application health endpoint; no production data.
-3. One hosting option selected after a cost and access review. **Candidate:** a small EC2 instance for hands-on OS/network troubleshooting; a Lambda-based alternative may be explored separately.
-4. One application-level signal and one infrastructure-level signal; CloudWatch alarm(s) and an explicitly tested notification path.
-5. A workload definition, response runbook, controlled failure, recovery verification, and incident exercise record.
-6. Terraform code, reviewed plans, tests, README, and teardown notes.
+Confirm the current account budget, region, dedicated lab scope, protected access
+path and cleanup plan. The host's Docker group and passwordless sudo intentionally
+grant `ssm-user` administrative access; restrict who can open a Session Manager
+session. Do not use employer resources, static AWS keys or public inventory access.
 
-### Out of scope for MVP
+### 2. Reproducible deployment
 
-- AWS official Incident Detection and Response enrollment or Support case integration.
-- Multi-account landing zone, full compliance assessment, remediation, real customer incidents, public unauthenticated security inventory, and continuous 24x7 coverage.
-- RDS, Bedrock, NAT gateway, load balancer, multi-AZ architecture, and CI/CD until justified by a specific learning outcome and cost review.
+Require the test job to succeed before publication. Record the image SHA/digest,
+workflow run and SSM CommandId. Verify the `lab` environment's actual approval
+rules and the external SSM document. After deployment, independently check the
+container image, `/healthz`, a fresh dashboard scan and CloudWatch events.
+Use [deployment instructions](DEPLOYMENT_EC2.md); health alone is insufficient.
 
-## Workload definition (draft)
+### 3. Detection and response
 
-- **Workload:** personal posture dashboard.
-- **Customer outcome:** an authorized lab user can obtain a current, clearly scoped set of security check results.
-- **Critical user journey:** open the application and retrieve check results without a server error.
-- **Application-level signal:** successful end-to-end check retrieval or a representative health transaction; exact mechanism and threshold are to be validated in the implementation.
-- **Infrastructure-level signal:** EC2 status checks if EC2 is selected. A healthy instance does not by itself prove a healthy application.
-- **Impact statement for exercises:** the lab user cannot retrieve results, or results are stale/unavailable; do not imply impact to actual customers.
+Measure normal behavior before choosing alarm thresholds and notification paths.
+Distinguish process liveness, scan completeness, security REVIEW findings and log
+delivery. Validate infrastructure signals and the authorized user journey.
+A CloudWatch Logs stream by itself is not an alarm or notification system.
 
-## Delivery milestones and acceptance criteria
+### 4. Controlled exercise
 
-Current implementation note: M1 synthetic prototype is complete. The operator
-reports an EC2/systemd/instance-role deployment, and the application now includes
-an allowlisted boto3 provider tested offline. M2 is not marked complete here:
-this revision still requires EC2 rollout, live-data verification, and validation
-that unauthorized dashboard access is denied. See `DEPLOYMENT_EC2.md`.
+Use the [runbook](INCIDENT_RUNBOOK.md) and [record template](EXERCISE_RECORD_TEMPLATE.md).
+Record real timestamps, the chosen fault, known-good rollback image, observed
+impact, recovery evidence and follow-up actions. Mark manual detection as manual;
+do not invent alarm delivery, support-team participation or customer impact.
 
-### M0. Guardrails and baseline
+## Known follow-up work
 
-- Confirm AWS Free/Paid plan, available credits, eligible services, region, and budget alert destination.
-- Record the existing S3 exercise separately; verify `.gitignore` is spelled correctly and ignores state, credentials, local plans, and private variable files. Commit `.terraform.lock.hcl`.
-- Review and reduce existing long-lived administrator access; never store credentials in code or screenshots.
-- **Done when:** budget notification is tested/confirmed, baseline plan is documented, and no secrets are staged for Git.
+- Export/version the custom SSM deployment document; review whether deployment
+  should pin its version. Its implementation cannot be audited from this checkout.
+- Review fixed CD instance-ID targeting separately from Name-based posture scope.
+- Add PR checks and required branch rules if merge protection is desired; the
+  current workflow triggers only on pushes to `feature/docker`.
+- Record live approval/access/rollback evidence before calling the deployment
+  path verified. Review ordering of concurrently queued releases.
+- Consider additional image/security hardening as a separate change; current
+  Dockerfile runs as root and the WSGI server remains a portfolio implementation.
 
-### M1. Local application prototype
-
-- Implement the checks against sample fixtures first; show PASS/REVIEW/UNKNOWN and a clear evidence timestamp.
-- Add tests for overly broad ingress, expected S3 settings, access denied, and incomplete data.
-- **Done when:** a local demo works with synthetic data and tests pass without AWS credentials.
-
-### M2. Deploy a bounded AWS workload
-
-- Select EC2 or Lambda based on access design and estimated charges; document the decision.
-- Use Terraform for workload resources and an application IAM role limited to read-only APIs actually required.
-- Protect access to the dashboard; do not publish an unauthenticated inventory endpoint.
-- **Done when:** an authorized user can retrieve live lab results and unauthorized access is denied.
-
-### M3. Observability and response
-
-- Instrument an application-level check and infrastructure-level check; choose alarm thresholds, evaluation windows, and missing-data treatment explicitly.
-- Test alarm delivery, write the runbook, and record a baseline of normal behavior.
-- **Done when:** a controlled lab failure triggers the expected signal, the operator receives it, and recovery is verified from the user journey.
-
-### M4. Exercise and portfolio
-
-- Perform a reversible failure only on dedicated lab resources. Capture timestamps, evidence, decisions, customer-style updates, recovery, and follow-ups.
-- Add architecture and teardown notes; document cost/credit consumption and limitations.
-- **Done when:** a reviewer can follow the story from code change to detection to restoration and retrospective.
-
-### M5. Optional extensions
-
-- CI checks (`terraform fmt`, `terraform validate`, unit tests, reviewed plan); use short-lived CI credentials rather than stored AWS keys.
-- Compare EC2 and Lambda deployment models. Consider RDS or Bedrock only for a concrete product requirement, not to pad the architecture.
-
-## Learning map
-
-- Terraform: provider, variables, outputs, references, state, drift, reviewed plans, and safe teardown.
-- AWS: IAM, EC2 or Lambda, S3 and security group inspection, CloudWatch metrics/alarms, notification delivery, and cost management.
-- Incident management: impact framing, triage, communication cadence, escalation criteria, recovery validation, and problem record.
-
-## Immediate next action
-
-Start M0. Do not deploy additional resources until account plan, budget, access method, and expected cleanup are documented.
+Remediation, multi-account discovery, continuous monitoring, formal compliance,
+RDS/Bedrock additions and production-readiness claims remain out of scope.

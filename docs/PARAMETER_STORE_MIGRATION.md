@@ -1,8 +1,9 @@
 # Parameter Store configuration
 
-Implemented locally and tested offline; not deployed or verified against AWS.
-This replaces the earlier design: Parameter Store is primary, and the existing
-systemd environment file is an automatic, whole-configuration fallback.
+This is the current configuration contract, checked against repository code.
+Live AWS configuration and permissions are not verified by this document.
+Parameter Store is primary; process environment is the whole-configuration fallback.
+Docker bootstrap forwards supported values from the optional host environment file.
 
 ## Configuration contract
 
@@ -29,9 +30,11 @@ comma-separated strings inside JSON arrays, nulls, and wrong types are invalid.
 `region` selects the posture API region. No credentials belong in this document.
 SecureString is not supported by this implementation; decryption is disabled.
 
-On EC2 no local application configuration file is required. The supplied unit
-uses `EnvironmentFile=-/etc/cloud-security-posture.env`, making fallback optional.
-If retained, systemd loads the file into the process; Python does not parse it.
+On EC2 no local application configuration file is required. If retained,
+`/etc/cloud-security-posture.env` is read by bootstrap, which passes an allowlist
+of settings into Docker. Python reads process environment, not this file. The file
+is neither sourced as shell code nor mounted into the container. See the supported
+file syntax in [deployment configuration](DEPLOYMENT_EC2.md#configuration).
 
 | Environment variable | Purpose |
 | --- | --- |
@@ -58,7 +61,7 @@ Name values follow the restricted literal syntax documented in [app/README.md](.
 
 Each accepted dashboard scan reads the latest parameter using boto3
 `get_parameter(Name=..., WithDecryption=False)` and the default credential chain.
-On EC2, retain the existing instance role and unit credential isolation; no keys
+On EC2, retain the existing instance role and bootstrap credential isolation; no keys
 are added. The returned name, type, numeric version, JSON, and scope are validated
 before any posture reads. One immutable Settings snapshot is used for that scan.
 
@@ -74,7 +77,8 @@ The dashboard layout and check semantics are unchanged. `/healthz` remains HTTP
 3-second connect and 5-second read timeouts with two total attempts; these are not
 a whole-request deadline. There is no cache, version pin, or background refresh.
 New SSM values take effect on the next scan; local environment edits require a
-service restart. Keep fallback scope current: during an outage it may differ from
+container recreation through bootstrap (a plain Docker restart retains old values).
+Keep fallback scope current: during an outage it may differ from
 the primary scope. Review warning logs to distinguish that situation.
 
 ## IAM and networking
@@ -103,19 +107,18 @@ Posture observation events carry the same scan ID and selected source/version.
 Parameter values, resource identifiers, credentials, and raw errors are omitted.
 No configuration-dump endpoint is added.
 
-1. Record the current code revision and preserve the working unit/environment.
-2. Run the offline suite below and deploy the reviewed code using the existing
+1. Record the deployed image tag/digest, SSM version and any fallback environment.
+2. Run the offline suite below and deploy the reviewed image using the current
    [EC2 procedure](DEPLOYMENT_EC2.md).
 3. As the operator, publish the JSON String parameter and grant the exact read
    permission. This code change creates or modifies no AWS resources.
-4. Deploy with the updated optional-EnvironmentFile unit and restart the actual
-   service once for the new code. An existing fallback file may be retained;
-   new EC2 hosts discover the bootstrap region automatically. No server config
-   edits are needed for subsequent SSM changes.
-5. Open the dashboard through authenticated access. Check `journalctl -u
-   cloud-security-posture.service` for `source: ssm`, a version, and matching scan
-   IDs. Verify intended resources and fresh observations, not just health.
-6. To roll back code, restore the known-good revision and restart with the retained
+4. Use the Docker deployment procedure; retain the optional fallback file.
+   New EC2 hosts discover the bootstrap region through IMDSv2; bridge containers
+   require metadata response hop limit 2. No server edits are needed for SSM changes.
+5. Open the dashboard through authenticated access. Check
+   `docker logs cloud-security-posture-explorer` for `source: ssm`, a version and
+   matching scan IDs. Verify intended resources and fresh observations, not just health.
+6. To roll back code, deploy the recorded known-good image tag with the retained
    environment. To undo a config edit, an authorized operator can republish the
    reviewed prior JSON as a new parameter version. There is no source-mode switch.
 

@@ -1,6 +1,8 @@
 # Lab Workload Incident Runbook
 
-**Status:** draft for a personal simulation. Not an AWS Support or official IDR runbook. Replace placeholders only after monitoring and access are implemented and tested.
+**Status:** operational draft aligned to Docker/ECR/SSM deployment, not a completed
+exercise or an AWS Support/official IDR runbook. Alarm and notification fields
+remain unverified; populate them only from actual deployment evidence.
 
 ## Workload profile
 
@@ -8,11 +10,15 @@
 - Customer outcome: authorized lab user retrieves current, scoped posture results.
 - Owner/on-call: lab operator (single-person exercise).
 - Environment/region: `[record after deployment]`.
-- Application health transaction: `[document URL/path or private test mechanism]`.
+- Application liveness: `GET http://127.0.0.1:8000/healthz` on the host; require
+  `{"liveness":"ok"}`. Separately request `/` through authenticated access and
+  verify fresh, complete observations; REVIEW is not itself an outage.
 - Alarm identifiers and links: `[record after deployment]`.
 - Notification destination: `[record and test]`.
 - Expected normal behavior and data freshness: `[measure and document]`.
-- Rollback/teardown reference: `[record after deployment]`.
+- Rollback: [image deployment procedure](DEPLOYMENT_EC2.md#deploy-a-published-image);
+  record the known-good image tag/digest. Infrastructure teardown remains in the
+  owning infrastructure repository and requires its own reviewed procedure.
 
 ## Trigger and impact
 
@@ -28,6 +34,40 @@ Start this runbook when an application-level alarm, infrastructure alarm, or fai
 6. **Recover safely:** use the documented rollback or a reversible lab action. Avoid changing unrelated resources or granting broad permissions as a shortcut.
 7. **Validate:** rerun the user journey, confirm data freshness and alarm recovery, and observe for recurrence. An EC2 status check alone is insufficient.
 8. **Close and improve:** record actual cause (or `undetermined`), contributing factors, detection gaps, follow-up owner, and runbook changes.
+
+## Docker and deployment diagnosis
+
+Read-only host checks (run in an authorized Session Manager session):
+
+```bash
+docker ps -a --filter name=cloud-security-posture-explorer
+docker inspect --format '{{.Config.Image}} {{.Image}} {{.State.Status}}' cloud-security-posture-explorer
+curl --fail http://127.0.0.1:8000/healthz
+docker logs --tail 100 cloud-security-posture-explorer
+sudo journalctl CONTAINER_NAME=cloud-security-posture-explorer --since '15 minutes ago'
+sudo tail -n 100 /var/log/bootstrap.log
+```
+
+| Symptom | Next evidence to inspect |
+| --- | --- |
+| CI test failure | Failed test/syntax step; publication and deployment should be skipped |
+| ECR login/pull failure | Push vs host-pull role, image SHA existence, region and connectivity |
+| Deployment waiting | `lab` environment protection/review state in GitHub |
+| SSM deployment failure or unconfirmed timeout | Original CommandId, target ID, managed-instance status, document version and `deployImage` output; do not assume a timed-out workflow stopped the remote command |
+| Health failure | Container state/logs, published port, Docker daemon and legacy-service conflict |
+| Health OK but UNKNOWN/503 | `configuration_load` source/version/fallback reason, metadata access, IAM and API errors; do not infer PASS |
+| Journal present, CloudWatch missing | SSM logging switch, group region/permissions, IMDSv2 and delivery error codes |
+
+The workflow's deployment ID is fixed; host replacement may require updating it.
+Posture Name tags do not resolve that deployment target. The custom SSM document
+is not in this checkout; verify its actual steps instead of assuming it matches
+bootstrap. Preserve workflow URL, commit/image SHA, CommandId, SSM parameter version,
+scan ID and UTC timestamps privately; redact inventory before portfolio publication.
+
+For image recovery, use a recorded known-good published tag and the deployment
+procedure. Avoid concurrent manual recovery and an in-flight SSM deployment.
+Recheck the running image, liveness, a fresh dashboard scan and log delivery after
+recovery. Do not restart the legacy Python systemd unit on a Docker host.
 
 ## Escalation decision
 

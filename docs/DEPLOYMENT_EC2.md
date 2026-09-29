@@ -1,291 +1,267 @@
-# Deploy the read-only provider on EC2
+# EC2 Docker/ECR deployment
 
-Parameter Store configuration is primary. The updated unit makes EnvironmentFile
-optional: EC2 discovers the bootstrap region through IMDSv2 and requires no local
-app settings. An existing environment file can remain as fallback. Add `ssm:GetParameter` on
-the exact configuration parameter ARN; see [configuration rollout and IAM details](PARAMETER_STORE_MIGRATION.md).
-The existing workload policy example covers posture reads; add this configuration
-read grant separately. No AWS permissions have been modified by this change.
+`bootstrap.sh` is Ubuntu 24.04 cloud-init shell user data. The EC2 host installs
+Docker and pulls an existing image; it does not clone the repository, build the
+application, create a virtual environment, or install application dependencies.
+The Python/WSGI application, SSM configuration, checks and JSON audit events are
+unchanged. This deployment is tested offline, not live-validated on EC2.
 
-The operator reports the previous MVP already runs on EC2 under systemd with an
-instance role. This guide updates that installation; no EC2/IAM changes have been
-applied by this code change. Paths, service names, region, and resource identifiers
-below are examples. Preserve the existing working unit/configuration for rollback.
+## Prerequisites
 
-## Prerequisites and access
+- Use an Ubuntu 24.04 AMI with the Ubuntu main/universe package repositories
+  enabled, systemd, and an operational SSM Agent for Session Manager access.
+- Publish the image to
+  `980468996827.dkr.ecr.us-east-1.amazonaws.com/cloud-security-posture-explorer`.
+  It must match the host architecture and include support for `HOST=0.0.0.0`.
+- Attach the existing EC2 instance role. No access keys or AWS credential files
+  are required. Retain SSM configuration, posture read and CloudWatch permissions
+  described in [IAM review](IAM_POLICY_REVIEW.md). Add ECR pull permissions below.
+- Enable IMDS, require IMDSv2, and set the metadata response hop limit to **2** in
+  the instance or launch template so bridge-networked containers can retrieve
+  instance-role credentials. Bootstrap does not change AWS metadata options.
+  See [AWS metadata options](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/configuring-instance-metadata-options.html).
+- Provide network access to Ubuntu repositories, `awscli.amazonaws.com` for initial
+  AWS CLI installation, ECR API/registry and its S3 image
+  layers, SSM, CloudWatch Logs, and the AWS APIs used by posture checks. IMDS must
+  be reachable inside the container.
+- Port 8000 is published on all host interfaces as requested. Keep the security
+  group closed to public inventory access; use Session Manager port forwarding
+  or an authenticated proxy. The application has no built-in authentication.
 
-- Python 3.10+ with venv, Git, systemd, and an existing EC2 instance profile.
-- The role grants the reads for enabled checks in [IAM_POLICY_REVIEW.md](IAM_POLICY_REVIEW.md).
-  EBS encryption adds `ec2:DescribeInstances` and `ec2:DescribeVolumes` to the
-  existing role; no static credentials or write permissions are required.
-- Instance Metadata Service is accessible to the process. Require IMDSv2 in the
-  instance configuration; current boto3 supports role credentials through IMDS.
-- Outbound DNS/HTTPS reaches the required AWS service endpoints, directly or
-  through existing network infrastructure. Do not disable certificate verification.
-- Keep port 8000 off public security-group ingress. The app binds only to loopback.
-  Access it through an authenticated SSH tunnel or an existing authenticated and
-  authorized reverse proxy. There is no application login or public inventory API.
+## Image selection and bootstrap
 
-## Prepare the release
+### CI publication gate
 
-### Bootstrap checkout ownership
+The `Build and Push to ECR` workflow runs on pushes to `feature/docker`.
+Its `test` job uses Python 3.12 (matching the Dockerfile), installs
+`app/requirements-lock.txt`, checks `bash -n bootstrap.sh`, and runs
+`python -m unittest discover -s app/tests -v`, including the offline bootstrap tests.
+The `build-and-push` job declares `needs: test`: a failed or skipped test job
+prevents image building and publication. No failure bypass is configured.
+The publication and deployment jobs each have `id-token: write` and assume
+separate AWS roles. The test job has read-only repository access and requires
+no AWS credentials.
 
-The root [bootstrap.sh](../bootstrap.sh) is a corrected copy of the operator's
-cloud-init script from `secure-enterprise-platform-lab/posture-workload`. Replace
-that project's copy when preparing user_data; this repository change does not
-modify the separate infrastructure checkout or an existing EC2 host.
+Published image tags are the full commit SHA. After publication, `deploy-check`
+requests deployment through SSM as described below. There is no PR trigger in
+this workflow; GitHub branch protection settings are external to this repository
+and have not been inspected by this documentation review.
+After pushing the workflow, verify that `test` succeeds before `build-and-push`
+starts in GitHub Actions. GitHub documents the dependency behavior in
+[Using jobs in a workflow](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-jobs).
 
-Cloud-init still runs as root, but the script recursively assigns the application
-directory, `.git`, `.venv`, and application files to `ssm-user:ssm-user` and grants
-owner read/write access (directory traversal and existing execute bits retained).
-It ensures the group exists, repairs old ownership before checking an existing
-checkout, and runs Git checks, venv creation, and pip as `ssm-user`. It preserves
-existing revisions and configuration rather than resetting or pulling on reruns.
-Ownership is reapplied after dependency installation. Symlinked checkout roots
-are rejected; recursive chown does not dereference venv interpreter symlinks.
+### SSM deployment job
 
-`User=ssm-user` and `ProtectSystem=strict` remain unchanged. The service's filesystem
-view stays read-only; an interactive `ssm-user` shell can update the checkout.
-Bootstrap does not change the identity of an already-open shell. On EC2, verify
-from an `ssm-user` session after bootstrap:
+The current job chain in [the workflow](../.github/workflows/build-and-push.yml) is:
 
-```sh
+```text
+push to feature/docker -> test -> build-and-push -> deploy-check
+                                                   (environment: lab)
+```
+
+`build-and-push` assumes `GitHubActionsECRPushRole`; `deploy-check` assumes
+`GitHubActionsPostureDeployRole`. Both use OIDC, not stored AWS keys.
+The deployment job targets the literal `INSTANCE_ID` in the workflow, in
+`us-east-1`, and invokes the custom SSM document
+`CloudSecurityPostureExplorerDeploy` with `ImageTag` set to the commit SHA.
+It polls the `deployImage` plugin up to 200 times with five-second sleeps,
+accepting only `Success` with response code zero. Job timeout is 25 minutes.
+Deployment jobs share concurrency group `posture-lab-deployment` with
+`cancel-in-progress: false`; this is not a guaranteed FIFO deployment queue.
+
+The job references GitHub environment `lab`. Required reviewers and deployment
+branch restrictions must be configured in GitHub Settings; `environment: lab`
+alone does not prove that approval is enforced. Verify these external settings
+before describing deployment as approval-gated. See
+[GitHub deployment review](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/review-deployments).
+
+The SSM document body, IAM role policies/trust, environment protection settings,
+and SSM Agent configuration are **not versioned in this repository**. Review the
+actual document's default version and confirm that `ImageTag` validation, image
+replacement, liveness check, environment forwarding, and journal configuration
+match the intended behavior. The workflow does not pin `--document-version` or
+independently curl the app: SSM plugin success alone does not prove the right
+image is serving, that `/healthz` was checked, or that AWS posture scans succeed.
+A polling/job timeout also does not establish that the remote command stopped;
+inspect the original CommandId before retrying or rolling back.
+
+The SSM managed instance must be online, the deployment role must be allowed to
+send this document to that instance and read invocation results, and the instance
+role must support SSM Agent operation plus ECR/app access. These are prerequisites,
+not resources created by this repository.
+
+**Instance replacement:** Name tags make EBS check targets resilient to changing
+instance IDs, but CD still uses a fixed `INSTANCE_ID`. Update that workflow value
+and any scoped deployment permissions after replacing the hosting instance.
+Bucket names and security group IDs in SSM must also be kept current.
+
+### Deploy a published image
+
+Paste the complete root [bootstrap.sh](../bootstrap.sh) into EC2 shell user data,
+including its `#!/bin/bash` line. Its only default image tag is:
+
+```bash
+IMAGE_TAG="${IMAGE_TAG:-1.1}"
+```
+
+For an existing host, copy the script to a local file and execute:
+
+```bash
+sudo bash bootstrap.sh
+# Deploy a different published version, or roll back to a known-good version:
+sudo env IMAGE_TAG='<published-full-commit-sha>' bash bootstrap.sh
+```
+
+Changing EC2 user data alone does not rerun bootstrap on an existing instance.
+No Git pull on the EC2 host is needed. CI publishes SHA tags, not `1.1` or `1.2`.
+The bootstrap default `1.1` only works if that tag already exists; use the exact
+published SHA for a reviewed release. Repeating bootstrap without IMAGE_TAG can
+replace a newer release with the default image. For new user data, set IMAGE_TAG
+near the top to the desired published tag. For manual rollback, use the recorded
+known-good tag with the same command above and independently verify the dashboard.
+
+Bootstrap installs `docker.io`, `curl`, `jq`, `sudo`, `unzip`, and CA certificates
+from the Ubuntu archive. It does not depend on the Ubuntu `awscli` package.
+An existing `aws` command is retained. If missing, bootstrap downloads the official
+AWS CLI v2 ZIP for x86_64 or ARM64 and runs its bundled installer with `--update`,
+using `/usr/local/aws-cli` and `/usr/local/bin`. The temporary download is cleaned
+up on exit; failed downloads/installations stop deployment. Every run logs
+`aws --version`. Downloads use HTTPS; this follows the AWS quick-install method
+without the optional separate PGP signature verification. See the
+[official AWS installation instructions](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html).
+It enables/starts Docker, logs versions, ensures
+`ssm-user` exists, appends Docker group membership, and validates a root-owned
+mode-0440 sudoers file before installing the exact rule:
+
+```text
+ssm-user ALL=(ALL) NOPASSWD:ALL
+```
+
+Both Docker membership and passwordless sudo give host administration privileges.
+Open a **new Session Manager session** after bootstrap for the group change.
+
+The script logs into ECR using the instance role and a temporary private Docker
+configuration, pulls the requested image, disables the two known legacy app
+units (`cloud-security-posture-explorer.service`, `cloud-security-posture.service`)
+if present, and stops/removes only the named application container. It starts the
+replacement with `--restart unless-stopped`, `-p 8000:8000`, `HOST=0.0.0.0` and
+journald logging. No application systemd unit is created; systemd manages Docker.
+Old checkout, virtual environment, unit files and configuration are left intact.
+
+Repeated runs replace the named container safely and repeat the permission setup.
+Login/pull failures leave the existing application running. Replacement causes a
+brief interruption; a start/health failure returns nonzero and leaves the new
+container available for diagnosis. There is no automatic rollback. Concurrent
+bootstrap executions are serialized with `flock`.
+
+## Configuration
+
+SSM remains primary: `/cloud-security-posture-explorer/lab/config`. Keep the
+existing JSON with `region`, `allowed_buckets`, `allowed_security_groups`,
+`allowed_instance_name_tags`, and optional `cloudwatch_logs_enabled`.
+
+No local environment file is required. When present,
+`/etc/cloud-security-posture.env` is preserved without modification. Bootstrap
+passes only these fallback/bootstrap settings into the container:
+
+- `SSM_REGION`, `AWS_REGION`, `AWS_DEFAULT_REGION`
+- `ALLOWED_BUCKETS`, `ALLOWED_SECURITY_GROUPS`, `ALLOWED_INSTANCE_NAME_TAGS`
+- `ALLOWED_INSTANCES` (legacy input; nonempty values still fail app validation)
+- `AWS_METADATA_SERVICE_TIMEOUT`, `AWS_METADATA_SERVICE_NUM_ATTEMPTS`
+
+Use one `KEY=value` per line; blank lines, comments and simple paired quotes are
+supported. Shell expansion, `export`, multiline values and inline comments are
+not supported. Unknown settings are ignored without logging their values.
+The file is never executed as shell code. Credentials, profiles and custom AWS
+endpoints are not forwarded; host credential files are not mounted. Ensure the
+published image also contains no AWS credentials or credential environment values.
+With no region override, the app discovers the SSM region through IMDSv2.
+SSM edits apply on the next scan; local fallback edits require a bootstrap rerun.
+
+## ECR permissions on the EC2 role
+
+In addition to existing permissions, allow:
+
+| Action | Resource |
+| --- | --- |
+| `ecr:GetAuthorizationToken` | `*` |
+| `ecr:BatchCheckLayerAvailability` | Repository ARN below |
+| `ecr:GetDownloadUrlForLayer` | Repository ARN below |
+| `ecr:BatchGetImage` | Repository ARN below |
+
+Repository ARN:
+`arn:aws:ecr:us-east-1:980468996827:repository/cloud-security-posture-explorer`.
+No ECR push/create/delete permissions are needed. Cross-account roles also require
+a compatible repository policy. Bootstrap changes no IAM policies or AWS resources.
+
+## Verify and troubleshoot
+
+After opening a new Session Manager session:
+
+```bash
 whoami
-cd /opt/cloud-security-posture-explorer
-stat -c '%U:%G %n' . .git .venv
-test -w .git && test -w .venv
-git pull --ff-only
+docker ps
+sudo -n cat /var/log/bootstrap.log
+docker logs --tail 100 cloud-security-posture-explorer
+sudo journalctl CONTAINER_NAME=cloud-security-posture-explorer --since '10 minutes ago'
+curl --fail http://127.0.0.1:8000/healthz
 ```
 
-Network access and a clean/compatible Git history are still needed for pull.
-The offline bootstrap tests run Bash with host mutations replaced by fakes and
-cover fresh/repeat runs, preservation of existing config, and non-repository
-directory refusal. They do not establish actual Linux UID permissions or a
-successful EC2 deployment:
+Bootstrap retries liveness up to 30 times, with bounded curl timeouts and a
+2-second delay. It requires a running container and the JSON object
+`{"liveness":"ok"}`; whitespace is accepted, extra fields/objects are rejected.
+Failures return nonzero. **Liveness is not a successful posture scan**: independently
+open the protected dashboard and verify SSM loading, observation timestamps,
+UNKNOWN reasons, and CloudWatch delivery. IAM/API failures remain UNKNOWN.
 
-```sh
-python3 -m unittest app.tests.test_bootstrap -v
+Application JSON and scan IDs continue to reach the host journal via Docker's
+[journald driver](https://docs.docker.com/engine/logging/drivers/journald/), and the
+application's existing CloudWatch handler still sends to
+`/cloud-security-posture-explorer/app`, stream = hosting instance ID.
+
+## Offline tests
+
+From a development checkout (not the EC2 container host):
+
+```bash
+python -m unittest app.tests.test_bootstrap -v
+python -m unittest discover -s app/tests -v
+bash -n bootstrap.sh
 ```
 
-First identify your current unit, checkout path, service account, and revision.
-For the example unit name:
-
-```sh
-sudo systemctl cat cloud-security-posture.service
-git -C /opt/cloud-security-posture-explorer rev-parse HEAD
-git -C /opt/cloud-security-posture-explorer status --short
-```
-
-Record the old revision and retain the old environment/unit privately. If local
-changes exist, preserve them before updating; do not reset or overwrite them.
-Publish the reviewed code to your repository, then fetch the chosen release on
-EC2 using your existing deployment account. Stop the service during an in-place
-update so it cannot read a mixture of revisions:
-
-```sh
-sudo systemctl stop cloud-security-posture.service
-cd /opt/cloud-security-posture-explorer
-git pull --ff-only
-python3 -m venv .venv
-.venv/bin/python -m pip install -r app/requirements-lock.txt
-.venv/bin/python -m pip check
-.venv/bin/python -m unittest discover -s app/tests -v
-```
-
-Use the owner of the checkout for Git and dependency installation. The runtime
-account only needs read/execute access to the checkout and virtual environment.
-If you deploy immutable release directories, prepare/test the new directory
-before stopping the old service and update the unit paths when switching.
-
-## Configure the bounded resource scope
-
-For an optional legacy/local fallback only, copy `app/deploy/posture.env.example` to `/etc/cloud-security-posture.env`, replace
-the invented identifiers, and restrict permissions (root-owned, mode 0600 is
-sufficient because the system service manager reads EnvironmentFile):
-
-```sh
-sudo install -m 0600 app/deploy/posture.env.example /etc/cloud-security-posture.env
-sudoedit /etc/cloud-security-posture.env
-```
-
-Example contents:
-
-```ini
-AWS_REGION=us-east-1
-ALLOWED_BUCKETS=your-personal-lab-bucket,another-personal-lab-bucket
-ALLOWED_SECURITY_GROUPS=sg-0123456789abcdef0
-ALLOWED_INSTANCE_NAME_TAGS=cloud-security-posture-explorer
-AWS_METADATA_SERVICE_TIMEOUT=2
-AWS_METADATA_SERVICE_NUM_ATTEMPTS=1
-```
-
-Do not copy over an existing environment file without retaining its current
-values. Comma-separated allowlists are explicit names/IDs, not patterns. Any
-list can be empty; all three empty in both sources produce UNKNOWN with no posture calls. Up to 100 unique
-entries per list are supported. Leave `ALLOWED_INSTANCE_NAME_TAGS` empty or unset to keep
-EBS checks disabled. Setting it enables one aggregate EBS encryption result per
-configured Name, based on the uniquely resolved instance and its attached volumes. Missing permissions or incomplete volume
-results produce UNKNOWN; no attached-volume evidence also produces UNKNOWN.
-Use a small scope: scans are sequential and
-total latency increases with each target. S3 bucket names are global; configure
-the intended region and restrict ownership through IAM as discussed in the review.
-
-No `aws configure`, static keys, secret files, or credential arguments are needed.
-The boto3 default chain obtains temporary credentials from the instance role.
-The example unit deliberately clears static-key/profile overrides, disables shared
-credential/config files for this service, and keeps EC2 metadata enabled. If
-adapting an existing unit, retain those protections. Never put credentials in the
-environment file. Do not enable botocore debug logging around live inventory.
+Bootstrap tests require Bash (Git Bash on Windows) and fake privileged/network
+commands. They check first/repeated runs, running/stopped container replacement,
+legacy service migration, preserved fallback configuration, role-only login,
+sudoers validation, configurable tags, login/pull/start failure and health failure.
+They also cover retaining an existing AWS CLI, installing the official x86_64 or
+ARM64 package when absent, skipping installation on rerun, and failing safely on
+download, extraction or installer errors.
+They do not establish actual Linux permissions, image compatibility, live ECR/IAM
+access or EC2 networking; verify these on the deployed lab instance.
 
 ## Name tag migration
 
-This is a one-time configuration schema change. The new code does not accept
-`allowed_instances`; a nonempty legacy `ALLOWED_INSTANCES` invalidates fallback
-rather than silently dropping EBS checks. No Terraform or AWS resources are
-modified by this application change.
+For deployments that still use instance-ID configuration:
 
-1. Preserve the deployed revision, Parameter Store JSON/version, and local env.
-2. Confirm the instance has the stable, case-sensitive `Name` tag value
-   `cloud-security-posture-explorer`. Future replacements must receive the same
-   tag from the existing deployment definition. Keep it unique in this account
-   and region among pending/running/stopping/stopped instances.
-3. Stop the existing service for the coordinated code/config update. If using the
-   bootstrap unit, its name is `cloud-security-posture-explorer.service`; the older
-   example below uses `cloud-security-posture.service`. Use the actual installed
-   name for all systemctl/journalctl commands; do not create a second service.
-4. Deploy/test the new code. As the configuration operator, replace the SSM JSON
-   `allowed_instances` key with `allowed_instance_name_tags`, using literal Name
-   values instead of IDs. Keep region, bucket, and security-group settings.
-5. Replace `ALLOWED_INSTANCES` in `/etc/cloud-security-posture.env` with
-   `ALLOWED_INSTANCE_NAME_TAGS=cloud-security-posture-explorer`. Update any saved
-   cloud-init/bootstrap environment template as well. Keep both sources aligned.
-6. Restart the existing service. Verify `configuration_load` selects `ssm`, then
-   check the dashboard's EBS row (now labeled by Name), evidence time, status, and
-   correlated audit events. Health alone does not establish a successful scan.
-7. Roll back by restoring the matching previous code, SSM document, and local
-   environment together, then restart. Old/new schema mixing is not supported.
+1. Give each intended EBS-check target a unique literal EC2 Name value in the
+   configured region among pending/running/stopping/stopped instances.
+2. Replace `allowed_instances` in the SSM JSON with `allowed_instance_name_tags`;
+   remove the old key. Preserve all other required fields.
+3. If a fallback file exists, replace nonempty `ALLOWED_INSTANCES` with
+   `ALLOWED_INSTANCE_NAME_TAGS`. Recreate the container through bootstrap to load it.
+4. Deploy a compatible image and verify Name resolution and volume observations.
+   No match, multiple matches or incomplete data must produce UNKNOWN.
 
-The resolver filters by `tag:Name` and non-terminated states and requires exactly
-one complete match. Zero matches (including propagation delay after creation),
-duplicate Names, missing tags/identity/state, API failures, or any continuation
-token yield UNKNOWN; no volume query occurs until identity is resolved. Stopped
-instances remain in scope. Terminated/shutting-down instances are excluded by the
-request. A bounded `MaxResults=5` response prevents unbounded lookup; a partial page
-is rejected rather than assuming it proves uniqueness. Retry after replacement
-or tag propagation settles. The app only observes; it performs no recovery action.
+This migration affects posture targeting only; it does not change the CD target
+`INSTANCE_ID` discussed above. No new tag-read action is required beyond the
+existing DescribeInstances call.
 
-EC2 documents eventual consistency and recently terminated results in
-[DescribeInstances](https://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_DescribeInstances.html).
-The existing DescribeInstances/DescribeVolumes permissions suffice.
+## Legacy deployment examples
 
-After this one-time migration, instance replacement with the same unique Name
-requires no Parameter Store EC2 target edit. **This does not make every Terraform
-destroy/apply independent of configuration:** security groups are still selected
-by ID, and their IDs may change on recreation; bucket names, region, parameter,
-role, and bootstrap settings must also remain valid. Security-group tag targeting
-is outside this change.
-
-## Adapt systemd
-
-`app/deploy/cloud-security-posture.service` is a complete example using runtime
-user/group `posture` and `/opt/cloud-security-posture-explorer`. Reuse your existing
-unprivileged account or create a dedicated account through your normal host setup,
-then adjust `User`, `Group`, `WorkingDirectory`, and `ExecStart` accordingly.
-Do not install the example unchanged unless those paths and identities exist.
-
-The unit uses the same `python -m app.server --port 8000` entry point. It adds a
-read-only filesystem view, no privilege escalation, journal logging, and automatic
-restart on process failure. `ProtectHome=true` requires code/venv outside `/home`.
-Do not add `PrivateNetwork=true`: it would block AWS and metadata access.
-
-After reviewing/adapting the unit (or merging the relevant settings into your
-existing unit):
-
-```sh
-sudo systemd-analyze verify /etc/systemd/system/cloud-security-posture.service
-sudo systemctl daemon-reload
-sudo systemctl enable cloud-security-posture.service
-sudo systemctl restart cloud-security-posture.service
-sudo systemctl status cloud-security-posture.service --no-pager
-```
-
-If creating a new unit rather than editing an existing one, install your adapted
-copy at `/etc/systemd/system/cloud-security-posture.service` with mode 0644 first.
-Do not launch a second service on the existing service's port.
-
-## Optional CloudWatch Logs
-
-Follow [CloudWatch Logs deployment](CLOUDWATCH_LOGS.md) to pre-create the fixed log
-group, grant only stream creation/event writes, and use the SSM
-`cloudwatch_logs_enabled` setting (default true).
-Journal stays enabled. The stream name is the hosting instance ID from IMDSv2,
-independent of the Name-tag scan targets. SSM logging changes apply on the next
-scan without restarting. Local logging variables are not used. Verify cloud delivery separately from liveness/posture.
-
-## Verify the release
-
-On EC2:
-
-```sh
-curl --fail --max-time 3 http://127.0.0.1:8000/healthz
-sudo journalctl -u cloud-security-posture.service -n 50 --no-pager
-```
-
-Health must return `{"liveness": "ok"}`. This verifies liveness only.
-From your workstation, using your existing authorized SSH access:
-
-```sh
-ssh -N -L 127.0.0.1:8000:127.0.0.1:8000 your-ssh-user@your-ec2-host
-```
-
-Open http://127.0.0.1:8000/ and verify the configured resources, region, scan ID,
-fresh observation/attempt timestamps, and reasons. Compare a selected result to
-the AWS configuration using your authorized operator access. No resource should
-appear outside the allowlists. Do not post live resource names in portfolio images.
-
-The application has no automatic polling. Each GET/HEAD `/` collects again;
-`/healthz` does not. API failures are rendered as per-resource UNKNOWN, commonly
-with HTTP 200 so remaining evidence stays visible. COMPLETE is evidence coverage,
-not a clean-security verdict. A 503 can indicate invalid configuration, another
-scan in progress, or a whole-page failure. Never use health 200 alone as rollout
-acceptance. AWS-side verification and systemd validation must be performed on EC2;
-offline tests do not establish that deployment succeeded.
-
-## Diagnose UNKNOWN without expanding permissions blindly
-
-Use the page scan ID to find `posture_observation` JSON events in the journal.
-Each event identifies a target by its zero-based index in the configured lists
-(buckets first, then groups, then instances). It records status, safe diagnostic, and AWS request
-ID when available; `api_requests` retains both DescribeInstances and DescribeVolumes
-operation/request IDs for EBS checks. It intentionally omits inventory and raw AWS messages.
-
-- `access_denied`: inspect the role, bucket resource scope, regional conditions,
-  and any explicit denies/SCPs/endpoint policies.
-- `sdk_error`: inspect the diagnostic class for credentials, timeout, or connection
-  errors. Check instance-role attachment, IMDS access, DNS, and HTTPS connectivity.
-- `api_error`: check target existence and request ID. Missing bucket BPA config
-  is UNKNOWN by design.
-- `invalid_response`: check incomplete responses or unsupported source references.
-  Nonempty prefix-list/security-group sources are deliberately not resolved.
-  For EBS, inspect the safe diagnostic for missing mappings, volumes, encryption
-  flags, or attachment inconsistencies. Retry after any attachment operation settles.
-- `unexpected_error`: inspect the deployed version and reproduce with offline
-  tests. The application does not print raw exceptions containing inventory.
-
-For an optional failure exercise, change only a copied app scope to a nonexistent
-target and verify UNKNOWN plus working health, then restore configuration and
-restart. No AWS resource or IAM mutation is necessary. This exercise is not marked
-as completed by this guide.
-
-## Rollback
-
-Stop the service, switch to the previously recorded release using your normal
-release process, restore its unit/environment and dependency environment, reload
-systemd, and restart. Verify both liveness and the expected user journey. If rolling
-back to the synthetic MVP, label it synthetic; do not treat its results as AWS
-observations. No AWS resource rollback is needed for this application-only update.
-
-## References
-
-- [Boto3 credentials and EC2 role provider](https://docs.aws.amazon.com/boto3/latest/guide/credentials.html)
-- [Botocore timeout/retry configuration](https://docs.aws.amazon.com/botocore/latest/reference/config.html)
+`app/deploy/cloud-security-posture.service` is a historical source/venv example
+with `User=posture`. Current bootstrap does not install it and runs no application
+systemd unit. The host account `ssm-user` is for Session Manager administration;
+it is not the container's Linux user. The current Dockerfile has no USER directive
+and therefore runs as container root. Docker restart policy manages the app,
+while systemd manages the Docker daemon. Do not re-enable the old app service
+alongside the container on port 8000.

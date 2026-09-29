@@ -1,0 +1,178 @@
+name: Build and Push to ECR
+
+on:
+  push:
+    branches:
+      - feature/docker
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: cloud-security-posture-explorer
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Test Dependencies
+        run: python -m pip install -r app/requirements-lock.txt
+
+      - name: Check Bootstrap Syntax
+        run: bash -n bootstrap.sh
+
+      - name: Run Unit Tests
+        run: python -m unittest discover -s app/tests -v
+
+  build-and-push:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::980468996827:role/GitHubActionsECRPushRole
+          aws-region: us-east-1
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build Docker Image
+        run: |
+          docker build -t $ECR_REPOSITORY:${{ github.sha }} .
+
+      - name: Tag Docker Image
+        run: |
+          docker tag $ECR_REPOSITORY:${{ github.sha }} \
+          980468996827.dkr.ecr.us-east-1.amazonaws.com/$ECR_REPOSITORY:${{ github.sha }}
+
+      - name: Push Docker Image
+        run: |
+          docker push \
+          980468996827.dkr.ecr.us-east-1.amazonaws.com/$ECR_REPOSITORY:${{ github.sha }}
+
+      - name: Show Image Tag
+        run: |
+          echo "Image pushed:"
+          echo "${{ github.sha }}"
+
+  deploy-check:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    environment: lab
+    timeout-minutes: 25
+
+    concurrency:
+      group: posture-lab-deployment
+      cancel-in-progress: false
+
+    permissions:
+      id-token: write
+      contents: read
+
+    env:
+      AWS_REGION: us-east-1
+      DOCUMENT_NAME: CloudSecurityPostureExplorerDeploy
+      AWS_PAGER: ""
+
+    steps:
+      - name: Configure deployment credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::980468996827:role/GitHubActionsPostureDeployRole
+          aws-region: us-east-1
+
+      - name: Deploy image and check result
+        shell: bash
+        run: |
+
+          set -euo pipefail
+
+          instances_json=$(aws ec2 describe-instances \
+            --region "$AWS_REGION" \
+            --filters \
+              "Name=tag:Name,Values=cloud-security-posture-explorer" \
+              "Name=instance-state-name,Values=running" \
+            --output json)
+
+          mapfile -t instance_ids < <(
+            jq -r '.Reservations[].Instances[].InstanceId' <<< "$instances_json"
+          )
+
+          if (( ${#instance_ids[@]} != 1 )); then
+            echo "Expected exactly one running posture instance; found ${#instance_ids[@]}." >&2
+            exit 1
+          fi
+
+          INSTANCE_ID="${instance_ids[0]}"
+          echo "Deploy target: $INSTANCE_ID"
+
+
+          echo "Deploying commit: $GITHUB_SHA"
+          parameters=$(jq -nc --arg tag "$GITHUB_SHA" '{ImageTag: [$tag]}')
+
+          command_id=$(aws ssm send-command \
+            --region "$AWS_REGION" \
+            --document-name "$DOCUMENT_NAME" \
+            --instance-ids "$INSTANCE_ID" \
+            --parameters "$parameters" \
+            --comment "Deploy posture image $GITHUB_SHA" \
+            --query 'Command.CommandId' \
+            --output text)
+
+          echo "SSM CommandId: $command_id"
+
+          for attempt in {1..200}; do
+            if ! aws ssm get-command-invocation \
+              --region "$AWS_REGION" \
+              --command-id "$command_id" \
+              --instance-id "$INSTANCE_ID" \
+              --plugin-name deployImage \
+              --output json > invocation.json 2> invocation.err; then
+              if grep -q 'InvocationDoesNotExist' invocation.err; then
+                sleep 5
+                continue
+              fi
+              cat invocation.err >&2
+              exit 1
+            fi
+
+            status=$(jq -r '.Status' invocation.json)
+            echo "Deployment status: $status"
+
+            case "$status" in
+              Success)
+                jq -r '.StandardOutputContent, .StandardErrorContent' invocation.json
+                test "$(jq -r '.ResponseCode' invocation.json)" = "0"
+                echo "Deployment succeeded: $GITHUB_SHA"
+                exit 0
+                ;;
+              Failed|Cancelled|TimedOut)
+                jq -r '.StandardOutputContent, .StandardErrorContent' invocation.json
+                exit 1
+                ;;
+            esac
+
+            sleep 5
+          done
+
+          echo "Deployment result was not confirmed before the polling limit." >&2
+          exit 1

@@ -1,6 +1,6 @@
 # Workload IAM policy review
 
-Parameter Store configuration is primary. Local EnvironmentFile is optional;
+Parameter Store configuration is primary. The host fallback environment file is optional;
 EC2 can discover the bootstrap region through IMDSv2. Add `ssm:GetParameter` on
 the exact configuration parameter ARN; see [configuration rollout and IAM details](PARAMETER_STORE_MIGRATION.md).
 The existing workload policy example covers posture reads; add this configuration
@@ -60,10 +60,12 @@ IAM enforcement.
   permissions policies are separate; the app does not call `AssumeRole` itself.
 - boto3 uses the default credential provider chain and temporary EC2 role
   credentials. No static credentials, explicit credential arguments, or profile
-  selector are in the application. The service example removes credential/profile
-  overrides to avoid accidentally selecting a different identity.
+  selector are in the application. Bootstrap forwards only configuration settings
+  and disables shared credential/config files; images must not embed credentials.
+  CloudWatch additionally uses an explicit EC2-role-only resolver.
 - Inspect all attached and inline policies, not just the example. Additional
-  broad policies could grant writes even though this app only issues reads.
+  broad policies could grant unrelated writes. Posture checks issue only reads;
+  optional telemetry writes log streams/events.
   A permissions boundary/SCP/explicit deny can also prevent these reads.
 - The configured region bounds EC2 requests; an S3 bucket name is global and the
   SDK may redirect to its actual region. Bucket ARN scope remains essential. For
@@ -91,6 +93,35 @@ CloudWatch metric/alarm integration. Optional CloudWatch Logs delivery adds only
 The posture policy example intentionally does not include these telemetry writes
 or the separate SSM grant. Local systemd journal logging adds no AWS permissions.
 
-Operator SSH/SSM access and deployment tooling permissions are separate from
-the application role and are outside this four-action policy. Do not broaden the
-workload role merely to make operator tasks convenient.
+The example JSON is a **posture-only fragment**, not a complete deployment
+policy. SSM configuration reads, CloudWatch delivery, ECR pull and SSM Agent
+operation need separately reviewed grants. Session Manager operator permissions
+and GitHub deployment permissions are distinct from the EC2 workload identity.
+The same EC2 instance role is used by the host and the app in this design; it is
+not a separate ECS task role.
+
+## Docker host ECR pull permissions
+
+The EC2 role also needs ECR authorization and repository-scoped image reads for
+bootstrap. See the exact [actions and repository ARN](DEPLOYMENT_EC2.md#ecr-permissions-on-the-ec2-role).
+No image push or repository administration permission is required. Application
+posture, SSM and CloudWatch permissions remain unchanged.
+
+## CI and CD identities
+
+The workflow uses two GitHub OIDC roles, separate from the EC2 instance role:
+
+| Identity | Current use |
+| --- | --- |
+| `GitHubActionsECRPushRole` | Image publication after tests; ECR login and push |
+| `GitHubActionsPostureDeployRole` | `ssm:SendCommand` and `ssm:GetCommandInvocation` for deployment |
+| EC2 instance role | ECR pull, app reads/log writes and managed-instance operation |
+
+Only publication and deployment jobs request `id-token: write`; the test job
+cannot request an OIDC token through that permission. OIDC permission permits
+requesting a token, not AWS access by itself: role trust and permissions must
+also allow the operation. Actual IAM policies are not present here and were not
+inspected. Review the deployment role against the specific custom SSM document
+and target instance; do not grant arbitrary command execution for convenience.
+See the [deployment job contract](DEPLOYMENT_EC2.md#ssm-deployment-job), including
+its external environment rules, fixed target ID and unversioned SSM document.

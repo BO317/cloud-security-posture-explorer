@@ -1,10 +1,11 @@
-"""Loopback-only read-only AWS dashboard; expose only through protected access."""
+"""Read-only AWS dashboard with loopback default; expose through protected access."""
 
 import argparse
 from datetime import datetime, timezone
 from html import escape
 import json
 import logging
+import os
 import signal
 from socketserver import ThreadingMixIn
 from threading import Lock
@@ -112,6 +113,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
+    host = os.environ.get("HOST", "127.0.0.1")
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     cloudwatch = configure_cloudwatch()
 
@@ -120,8 +122,8 @@ def main():
 
     previous = signal.signal(signal.SIGTERM, terminate)
     try:
-        with make_server("127.0.0.1", args.port, application, server_class=ThreadedWSGIServer) as server:
-            print(f"AWS read-only dashboard: http://127.0.0.1:{server.server_port} (Ctrl+C to stop)", flush=True)
+        with make_server(host, args.port, application, server_class=ThreadedWSGIServer) as server:
+            print(f"AWS read-only dashboard: http://{server.server_address[0]}:{server.server_port} (Ctrl+C to stop)", flush=True)
             server.serve_forever()
     except KeyboardInterrupt:
         pass

@@ -1,16 +1,34 @@
 # Architecture and Decision Record
 
 **Status:** AWS provider implemented and tested offline. The operator reports the
-previous MVP is deployed on EC2 with systemd and an instance role. This revision
+previous MVP used systemd; bootstrap now deploys an ECR image on EC2 with Docker and an instance role. This revision
 has not been deployed or live-validated by the implementation task. It remains a
 single-account learning workload, not a full AWS landing zone or official IDR workload.
+
+## Delivery view
+
+```mermaid
+flowchart LR
+    Push[Push feature/docker] --> Test[Python 3.12 tests and Bash syntax]
+    Test --> Build[OIDC push role: build and push SHA image]
+    Build --> ECR[ECR repository]
+    Build --> Deploy[deploy-check: lab environment rules]
+    Deploy --> SSMDeploy[OIDC deploy role: SSM custom document]
+    SSMDeploy --> Host[Fixed EC2 target: Docker host]
+    ECR --> Host
+```
+
+The custom SSM document is external to the repository. Its implementation and
+GitHub environment reviewers must be verified separately. Initial host setup is
+`bootstrap.sh`; do not assume that the external document executes the same script.
+See [deployment details](DEPLOYMENT_EC2.md#ssm-deployment-job).
 
 ## Logical view
 
 ```mermaid
 flowchart TD
     User[Authorized lab operator] --> Access[SSH tunnel or protected local proxy]
-    Access --> Web[Loopback wsgiref server with request threads]
+    Access --> Web[wsgiref in Docker; HOST=0.0.0.0; published port 8000]
     Web --> Health[GET /healthz: liveness only]
     Web --> Gate[GET /: single collection lock]
     Gate --> Config[Configuration loader]
@@ -35,7 +53,7 @@ flowchart TD
     Provider --> Audit[Structured application events]
     Config --> Audit
     Web --> Audit
-    Audit --> Journal[Existing systemd journal]
+    Audit --> Journal[Docker journald driver: host journal]
     Audit --> Queue[Optional bounded background queue]
     Queue --> Logs[CloudWatch Logs: fixed group, instance ID stream]
     Metadata[IMDSv2 identity and refreshable EC2 role] --> Logs
@@ -96,9 +114,12 @@ See [application contract and tests](../app/README.md),
 
 ## Hosting decision
 
-**EC2 selected by the operator:** existing systemd service and instance role are
-retained. The live dashboard stays bound to loopback and requires an authenticated
-access path such as SSH forwarding or a protected local proxy. No built-in login
+**EC2 selected by the operator:** bootstrap installs Docker and runs a published
+ECR image, retaining the instance role. Docker restart policy replaces the old
+application systemd service. See [deployment guide](DEPLOYMENT_EC2.md). Direct
+Python execution defaults to loopback; bootstrap explicitly binds the container
+to `0.0.0.0` and publishes host port 8000 on all interfaces. Keep network access
+restricted and use an authenticated tunnel or proxy. No built-in login
 is claimed. Compute, storage, public IPv4, and monitoring can incur charges.
 
 **Lambda alternative:** useful for a serverless comparison; requires its own authenticated access and workload-level observability design. A Lambda function URL created for an AWS credit activity is not automatically the same as a secure public dashboard.
@@ -118,7 +139,7 @@ remains an alternative, not part of this implementation.
 
 - **User journey:** representative check retrieval succeeds and is fresh enough for the lab's documented expectation.
 - **Application signal:** a health transaction or error/freshness signal; exact implementation and costs must be validated.
-- **Infrastructure signal:** EC2 status checks if EC2 is selected.
+- **Infrastructure signal:** EC2 status checks; alarms and notification wiring remain to be validated.
 - **Alarm design:** document threshold, evaluation periods, missing-data behavior, notification destination, and test result. Avoid using CPU alone as a proxy for customer impact.
 - **Recovery:** verify the user journey, not only a green infrastructure metric.
 
