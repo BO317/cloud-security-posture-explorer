@@ -90,7 +90,6 @@ jobs:
 
     env:
       AWS_REGION: us-east-1
-      INSTANCE_ID: i-05ec2e36ea46a248e
       DOCUMENT_NAME: CloudSecurityPostureExplorerDeploy
       AWS_PAGER: ""
 
@@ -104,7 +103,28 @@ jobs:
       - name: Deploy image and check result
         shell: bash
         run: |
+
           set -euo pipefail
+
+          instances_json=$(aws ec2 describe-instances \
+            --region "$AWS_REGION" \
+            --filters \
+              "Name=tag:Name,Values=cloud-security-posture-explorer" \
+              "Name=instance-state-name,Values=running" \
+            --output json)
+
+          mapfile -t instance_ids < <(
+            jq -r '.Reservations[].Instances[].InstanceId' <<< "$instances_json"
+          )
+
+          if (( ${#instance_ids[@]} != 1 )); then
+            echo "Expected exactly one running posture instance; found ${#instance_ids[@]}." >&2
+            exit 1
+          fi
+
+          INSTANCE_ID="${instance_ids[0]}"
+          echo "Deploy target: $INSTANCE_ID"
+
 
           echo "Deploying commit: $GITHUB_SHA"
           parameters=$(jq -nc --arg tag "$GITHUB_SHA" '{ImageTag: [$tag]}')
